@@ -2,8 +2,8 @@
 AI Engine — Phase 7B: The Brain & Universal JSON Router
 
 Edith persona.  Every response is a JSON object with three keys:
-  action_type   :  "os_command" | "browser_action" | "conversation"
-  action_payload:  the command / URL / answer text
+  action_type   :  "os_command" | "browser_action" | "conversation" | "youtube_play"
+  action_payload:  the command / URL / answer text / video request
   spoken_response: what Edith says aloud (JARVIS persona)
 """
 
@@ -55,7 +55,7 @@ YOUR TASK:
 Given the user's natural-language intent, return a SINGLE JSON object with exactly three keys:
 
 {{
-  "action_type": "os_command" | "browser_action" | "conversation",
+  "action_type": "os_command" | "browser_action" | "conversation" | "youtube_play",
   "action_payload": "<the payload>",
   "spoken_response": "<what you say aloud>"
 }}
@@ -76,12 +76,20 @@ TYPE A - "os_command":
   For any other OS task: provide a PowerShell command string.
 
 TYPE B - "browser_action":
-  Use when the user wants to search the web, open a website, watch YouTube, check weather, etc.
+  Use when the user wants to search the web, open a website, check weather, etc. (NOT YouTube videos).
   action_payload = a full URL.
-  For YouTube searches: use "https://www.youtube.com/results?search_query=<query>".
   For Google searches: use "https://www.google.com/search?q=<query>".
   For weather/local queries: default location is Bangalore.
   For specific sites: use the direct URL.
+  Do NOT use this for YouTube video requests — use TYPE D instead.
+
+TYPE D - "youtube_play":
+  Use when the user wants to play or open a specific YouTube video, channel, or creator's content.
+  This includes: "play X video", "open X's latest video", "show me X's most popular video",
+  "play trending video", "play X song on YouTube", "watch X on YouTube".
+  action_payload = the original natural-language video request (verbatim from the user).
+  Do NOT try to construct a URL yourself — the resolver will find the exact video.
+  spoken_response = brief confirmation, e.g. "Finding that for you now, sir."
 
 TYPE C - "conversation":
   Use when the user asks a question, wants an explanation, needs math help,
@@ -106,9 +114,6 @@ User: "Lock my computer"
 User: "Turn on focus mode"
 {{"action_type": "os_command", "action_payload": "focus_mode:on", "spoken_response": "Focus mode activated. Distractions blocked. Time to lock in, Rishit."}}
 
-User: "Open YouTube and search for DSA playlist"
-{{"action_type": "browser_action", "action_payload": "https://www.youtube.com/results?search_query=DSA+playlist+for+beginners", "spoken_response": "Opening YouTube. I found a highly rated DSA playlist for your preparation."}}
-
 User: "What's the weather in Bangalore?"
 {{"action_type": "browser_action", "action_payload": "https://www.google.com/search?q=weather+bangalore", "spoken_response": "Pulling up the Bangalore forecast on your screen, sir."}}
 
@@ -120,6 +125,21 @@ User: "Open my notes folder"
 
 User: "Prepare for DSA test"
 {{"action_type": "browser_action", "action_payload": "https://leetcode.com/problemset/", "spoken_response": "Opening LeetCode for your DSA preparation. Good luck, Rishit."}}
+
+User: "Play Samay Raina's latest video"
+{{"action_type": "youtube_play", "action_payload": "Samay Raina latest video", "spoken_response": "Locating Samay Raina's latest upload now, sir."}}
+
+User: "Open MrBeast most popular video"
+{{"action_type": "youtube_play", "action_payload": "MrBeast most popular video", "spoken_response": "Finding MrBeast's top video for you, Rishit."}}
+
+User: "Play trending video on YouTube"
+{{"action_type": "youtube_play", "action_payload": "trending video on YouTube India", "spoken_response": "Pulling up today's trending video momentarily."}}
+
+User: "Open YouTube and search for DSA playlist"
+{{"action_type": "youtube_play", "action_payload": "DSA playlist for beginners", "spoken_response": "Finding the best DSA playlist on YouTube for you, sir."}}
+
+User: "Play Blinding Lights by The Weeknd on YouTube"
+{{"action_type": "youtube_play", "action_payload": "Blinding Lights The Weeknd official video", "spoken_response": "Opening Blinding Lights now. Excellent choice, Rishit."}}
 {memory_block}"""
 
 
@@ -176,7 +196,7 @@ def parse_intent(intent: str) -> dict:
     action_payload = result.get("action_payload", "")
     spoken_response = result.get("spoken_response", "")
 
-    if action_type not in ("os_command", "browser_action", "conversation"):
+    if action_type not in ("os_command", "browser_action", "conversation", "youtube_play"):
         raise ValueError(f"Unknown action_type: {action_type}")
 
     if not action_payload:

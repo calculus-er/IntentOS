@@ -1,10 +1,12 @@
 """
-OS Execution Engine for IntentOS.
+OS Execution Engine for IntentOS — Phase 7C
 
-Maps parsed action dicts to real OS-level operations using Python's
-native subprocess, webbrowser, and os modules.
+Real native handlers for volume (pycaw), brightness (screen-brightness-control),
+lock workstation (ctypes), focus mode (hosts file), and PowerShell fallback
+with -ExecutionPolicy Bypass.
 """
 
+import ctypes
 import os
 import platform
 import subprocess
@@ -12,7 +14,7 @@ import webbrowser
 
 
 # ---------------------------------------------------------------------------
-# Action handlers
+# Action handlers — legacy (open_folder, open_url, open_app, run_command)
 # ---------------------------------------------------------------------------
 
 def _open_folder(target: str) -> dict:
@@ -36,7 +38,6 @@ def _open_folder(target: str) -> dict:
 
 def _open_url(target: str) -> dict:
     """Open a URL in the default browser."""
-    # Ensure the target looks like a URL
     if not target.startswith(("http://", "https://")):
         target = "https://" + target
 
@@ -47,7 +48,6 @@ def _open_url(target: str) -> dict:
 def _open_app(target: str) -> dict:
     """Launch an application by name / command."""
     try:
-        # On Windows, use 'start'; on others, try direct invocation.
         if platform.system() == "Windows":
             subprocess.Popen(["cmd", "/c", "start", "", target])
         else:
@@ -59,15 +59,14 @@ def _open_app(target: str) -> dict:
 
 
 def _run_command(target: str) -> dict:
-    """Run an arbitrary shell command (use with caution)."""
+    """Run an arbitrary shell command."""
     try:
         result = subprocess.run(
             target, shell=True, capture_output=True, text=True, timeout=15,
         )
         return {
             "action": "run_command", "target": target, "status": "ok",
-            "stdout": result.stdout[:500],
-            "stderr": result.stderr[:500],
+            "detail": (result.stdout[:200] or result.stderr[:200] or "Done.").strip(),
         }
     except subprocess.TimeoutExpired:
         return {"action": "run_command", "target": target,
@@ -75,7 +74,123 @@ def _run_command(target: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Dispatcher
+# Phase 7C handlers — native OS control
+# ---------------------------------------------------------------------------
+
+def _set_volume(level: int) -> dict:
+    """Set system volume using pycaw (Windows Core Audio API)."""
+    try:
+        from pycaw.pycaw import AudioUtilities
+
+        speakers = AudioUtilities.GetSpeakers()
+        volume = speakers.EndpointVolume
+
+        # pycaw uses a scalar 0.0-1.0 range
+        scalar = max(0.0, min(1.0, level / 100.0))
+        volume.SetMasterVolumeLevelScalar(scalar, None)
+
+        return {"action": "set_volume", "target": f"{level}%",
+                "status": "ok", "detail": f"Volume set to {level}%."}
+    except Exception as exc:
+        return {"action": "set_volume", "target": f"{level}%",
+                "status": "error", "detail": str(exc)}
+
+
+def _set_brightness(level: int) -> dict:
+    """Set display brightness using screen-brightness-control."""
+    try:
+        import screen_brightness_control as sbc
+        sbc.set_brightness(max(0, min(100, level)))
+        return {"action": "set_brightness", "target": f"{level}%",
+                "status": "ok", "detail": f"Brightness set to {level}%."}
+    except Exception as exc:
+        return {"action": "set_brightness", "target": f"{level}%",
+                "status": "error", "detail": str(exc)}
+
+
+def _lock_workstation() -> dict:
+    """Lock the Windows workstation."""
+    try:
+        ctypes.windll.user32.LockWorkStation()
+        return {"action": "lock_workstation", "target": "lock",
+                "status": "ok", "detail": "Workstation locked."}
+    except Exception as exc:
+        return {"action": "lock_workstation", "target": "lock",
+                "status": "error", "detail": str(exc)}
+
+
+# Domains to block in focus mode
+_FOCUS_BLOCK_LIST = [
+    "www.youtube.com", "youtube.com",
+    "www.reddit.com", "reddit.com",
+    "www.twitter.com", "twitter.com", "x.com",
+    "www.instagram.com", "instagram.com",
+    "www.facebook.com", "facebook.com",
+    "www.tiktok.com", "tiktok.com",
+]
+
+_HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
+_FOCUS_MARKER = "# IntentOS-Focus"
+
+
+def _focus_mode(on: bool) -> dict:
+    """Toggle focus mode by editing the Windows hosts file."""
+    try:
+        with open(_HOSTS_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        if on:
+            # Remove any old focus entries, then add fresh ones
+            lines = [l for l in lines if _FOCUS_MARKER not in l]
+            for domain in _FOCUS_BLOCK_LIST:
+                lines.append(f"127.0.0.1  {domain}  {_FOCUS_MARKER}\n")
+            mode_str = "ON"
+        else:
+            # Remove focus entries
+            lines = [l for l in lines if _FOCUS_MARKER not in l]
+            mode_str = "OFF"
+
+        with open(_HOSTS_PATH, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        # Flush DNS cache so changes take effect immediately
+        subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-Command", "ipconfig /flushdns"],
+            capture_output=True, timeout=5,
+        )
+
+        return {"action": "focus_mode", "target": mode_str,
+                "status": "ok", "detail": f"Focus mode {mode_str}. {'Distractions blocked.' if on else 'Restrictions lifted.'}"}
+    except PermissionError:
+        return {"action": "focus_mode", "target": "on" if on else "off",
+                "status": "error", "detail": "Permission denied. Run server as Administrator."}
+    except Exception as exc:
+        return {"action": "focus_mode", "target": "on" if on else "off",
+                "status": "error", "detail": str(exc)}
+
+
+def _run_powershell(command: str) -> dict:
+    """Execute a PowerShell command with -ExecutionPolicy Bypass."""
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-Command", command],
+            capture_output=True, text=True, timeout=15,
+        )
+        output = (result.stdout[:200] or result.stderr[:200] or "Done.").strip()
+        return {"action": "powershell", "target": command,
+                "status": "ok", "detail": output}
+    except subprocess.TimeoutExpired:
+        return {"action": "powershell", "target": command,
+                "status": "error", "detail": "PowerShell command timed out (15 s)"}
+    except Exception as exc:
+        return {"action": "powershell", "target": command,
+                "status": "error", "detail": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Legacy dispatcher
 # ---------------------------------------------------------------------------
 
 _HANDLERS = {
@@ -85,6 +200,10 @@ _HANDLERS = {
     "run_command": _run_command,
 }
 
+
+# ---------------------------------------------------------------------------
+# Main dispatch
+# ---------------------------------------------------------------------------
 
 def execute_tasks(tasks: list[dict]) -> list[dict]:
     """
@@ -100,38 +219,45 @@ def execute_tasks(tasks: list[dict]) -> list[dict]:
         action_type = task.get("action_type", "")
         action_payload = task.get("action_payload", "")
 
-        # ---- New Phase 7B router format ----
+        # ---- Phase 7B router format ----
         if action_type == "browser_action":
             results.append(_open_url(action_payload))
             continue
 
         if action_type == "os_command":
-            # Parse structured os_command payloads
             payload = action_payload.strip()
 
             if payload.startswith("explorer "):
                 path = payload.replace("explorer ", "", 1).strip()
                 results.append(_open_folder(path))
+
             elif payload.startswith("set_volume:"):
-                # Placeholder — Phase 7C will implement pycaw
-                results.append({"action": "set_volume", "target": payload,
-                                "status": "ok", "detail": "Volume handler pending (Phase 7C)."})
+                try:
+                    level = int(payload.split(":")[1])
+                except (IndexError, ValueError):
+                    level = 50
+                results.append(_set_volume(level))
+
             elif payload.startswith("set_brightness:"):
-                results.append({"action": "set_brightness", "target": payload,
-                                "status": "ok", "detail": "Brightness handler pending (Phase 7C)."})
+                try:
+                    level = int(payload.split(":")[1])
+                except (IndexError, ValueError):
+                    level = 50
+                results.append(_set_brightness(level))
+
             elif payload == "lock_workstation":
-                results.append({"action": "lock_workstation", "target": payload,
-                                "status": "ok", "detail": "Lock handler pending (Phase 7C)."})
+                results.append(_lock_workstation())
+
             elif payload.startswith("focus_mode:"):
-                results.append({"action": "focus_mode", "target": payload,
-                                "status": "ok", "detail": "Focus mode handler pending (Phase 7C)."})
+                mode = payload.split(":")[1].strip().lower()
+                results.append(_focus_mode(mode == "on"))
+
             else:
-                # Treat as app launch or shell command
-                # Check if it looks like a simple app name (no spaces, no flags)
+                # Heuristic: simple word = app launch, otherwise PowerShell
                 if " " not in payload and not payload.startswith(("-", "/")):
                     results.append(_open_app(payload))
                 else:
-                    results.append(_run_command(payload))
+                    results.append(_run_powershell(payload))
             continue
 
         # ---- Legacy format fallback ----

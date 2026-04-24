@@ -8,3 +8,6 @@ sounddevice
 numpy
 onnxruntime
 faster-whisper
+pycaw
+comtypes
+screen-brightness-control

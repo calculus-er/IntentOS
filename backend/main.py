@@ -36,7 +36,9 @@ load_dotenv()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from backend.voice_listener import boot_voice_engine, start_hotkey_listener
+    from backend.tts_engine import regenerate_listening_wav
     boot_voice_engine()
+    regenerate_listening_wav()
     start_hotkey_listener()
     yield
 

@@ -339,6 +339,10 @@ def _voice_pipeline():
             body = json.loads(res.read())
             spoken = body.get("spoken_response", body.get("message", "Done."))
             print(f"[Edith] {spoken}")
+
+            # Speak the response aloud via Kokoro TTS
+            from backend.tts_engine import speak
+            speak(spoken)
         except Exception as exc:
             print(f"[Edith] API call failed: {exc}")
     finally:

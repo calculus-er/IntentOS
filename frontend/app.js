@@ -1,8 +1,8 @@
 /**
- * IntentOS — Frontend logic
+ * IntentOS — Frontend logic (Phase 7D)
  *
- * Sends the user's natural-language intent to the local Python backend,
- * displays a loading state, then renders the execution results.
+ * Handles both the text input form and displays Edith's spoken response
+ * alongside execution results from the new JSON router format.
  */
 
 const API_URL = "/api/intent";
@@ -20,12 +20,11 @@ const checkSVG = `<svg class="task-icon ok" viewBox="0 0 24 24" fill="none" stro
 
 const crossSVG = `<svg class="task-icon err" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
 
-// Pretty labels for each action type
-const ACTION_LABELS = {
-  open_folder: "📂 Open folder",
-  open_url:    "🌐 Open URL",
-  open_app:    "🚀 Launch app",
-  run_command: "⚡ Run command",
+// Action type icons and labels
+const TYPE_META = {
+  os_command:      { icon: "⚡", label: "System Command" },
+  browser_action:  { icon: "🌐", label: "Browser Action" },
+  conversation:    { icon: "💬", label: "Conversation" },
 };
 
 // ---- Render helpers ----
@@ -34,37 +33,60 @@ function showLoading() {
   results.innerHTML = `
     <div class="status-card is-loading">
       <div class="spinner"></div>
-      <p class="status-label">Thinking & executing…</p>
+      <p class="status-label">Edith is processing…</p>
     </div>`;
   hint.style.display = "none";
 }
 
 function showResults(data) {
-  const taskItems = data.results
-    .map((r) => {
-      const icon   = r.status === "ok" ? checkSVG : crossSVG;
-      const label  = ACTION_LABELS[r.action] || r.action;
-      const detail = r.detail ? ` — ${r.detail}` : "";
-      return `
-        <li class="task-item">
-          ${icon}
-          <span>
-            <span class="task-action">${label}</span>
-            <span class="task-target">${escapeHTML(r.target)}${detail}</span>
-          </span>
-        </li>`;
-    })
-    .join("");
+  const meta = TYPE_META[data.action_type] || { icon: "🔧", label: data.action_type };
+  const statusIcon = data.execution_status === "ok" ? checkSVG : crossSVG;
+  const statusClass = data.execution_status === "ok" ? "ok" : "err";
+
+  // Build the spoken response bubble
+  const spokenHTML = data.spoken_response
+    ? `<div class="edith-bubble">
+         <span class="edith-avatar">E</span>
+         <p class="edith-speech">${escapeHTML(data.spoken_response)}</p>
+       </div>`
+    : "";
+
+  // Build the action detail
+  let actionDetail = "";
+  if (data.action_type !== "conversation") {
+    actionDetail = `
+      <div class="task-item">
+        ${statusIcon}
+        <span>
+          <span class="task-action">${meta.icon} ${meta.label}</span>
+          <span class="task-target">${escapeHTML(data.action_payload)}</span>
+        </span>
+      </div>`;
+  } else {
+    actionDetail = `
+      <div class="task-item conversation-item">
+        ${statusIcon}
+        <span>
+          <span class="task-action">${meta.icon} ${meta.label}</span>
+          <span class="task-target">${escapeHTML(data.action_payload)}</span>
+        </span>
+      </div>`;
+  }
+
+  const detailNote = data.execution_detail
+    ? `<p class="exec-detail">${escapeHTML(data.execution_detail)}</p>`
+    : "";
 
   results.innerHTML = `
     <div class="status-card is-success">
-      <ul class="task-list">${taskItems}</ul>
-      <p class="summary">${escapeHTML(data.message)}</p>
+      ${spokenHTML}
+      <ul class="task-list">${actionDetail}</ul>
+      ${detailNote}
     </div>`;
 
   // Pulse the brand icon on success
   brandIcon.style.animation = "none";
-  void brandIcon.offsetWidth;             // reflow
+  void brandIcon.offsetWidth;
   brandIcon.style.animation = "scaleIn 0.4s ease-out";
 }
 

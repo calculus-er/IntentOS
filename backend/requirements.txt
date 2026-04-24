@@ -11,3 +11,5 @@ faster-whisper
 pycaw
 comtypes
 screen-brightness-control
+kokoro-onnx
+soundfile

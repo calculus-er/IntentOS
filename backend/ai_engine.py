@@ -1,8 +1,10 @@
 """
-AI Engine — Groq integration for IntentOS.
+AI Engine — Phase 7B: The Brain & Universal JSON Router
 
-Takes a raw natural-language intent string and returns a structured list
-of OS-level actions by prompting the llama-3.3-70b-versatile model.
+Edith persona.  Every response is a JSON object with three keys:
+  action_type   :  "os_command" | "browser_action" | "conversation"
+  action_payload:  the command / URL / answer text
+  spoken_response: what Edith says aloud (JARVIS persona)
 """
 
 import json
@@ -11,60 +13,126 @@ import re
 
 from groq import Groq
 
+from backend.memory import load_history
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 MODEL = "llama-3.3-70b-versatile"
 
+
 def _build_system_prompt() -> str:
-    """Build the system prompt, injecting the real notes folder path."""
+    """Build the Edith system prompt with memory context."""
     notes_path = os.getenv(
         "NOTES_FOLDER_PATH",
         "./mock_system_files/DSA_Notes",
     ).replace("\\", "/")
 
-    return f"""You are IntentOS, an AI that converts a user's natural-language intent into a precise JSON action plan that a local operating system agent can execute.
+    # Inject recent memory
+    history = load_history()
+    memory_block = ""
+    if history:
+        lines = []
+        for h in history:
+            lines.append(
+                f'  User: "{h["intent"]}" -> {h["action_type"]}: {h["action_payload"]}'
+            )
+        memory_block = (
+            "\n\nRECENT MEMORY (last interactions):\n" + "\n".join(lines) + "\n"
+        )
 
-RULES:
-1. Return ONLY a valid JSON array — no markdown, no commentary, no code fences.
-2. Each element must be an object with exactly two keys:
-   - "action": one of "open_folder", "open_url", "open_app", "run_command"
-   - "target": the full path, URL, application name, or shell command string
-3. Choose realistic, helpful targets. For learning intents, pick well-known educational URLs (e.g., LeetCode, VisualGo, GeeksforGeeks, YouTube tutorials).
-4. For folder paths on Windows, use forward slashes (e.g., "C:/Users/rishu/Desktop/Notes").
-5. Return between 1 and 5 actions. Keep it focused and practical.
-6. The user's local notes/study folder is located at: "{notes_path}". Use this exact path when a folder action is relevant.
+    return f"""You are Edith, an ultra-competent AI assistant modeled after J.A.R.V.I.S. from Iron Man.
+You operate IntentOS, a local operating system automation layer on a Windows machine.
+The user's name is Rishit. Address him as "Rishit" or "Sir".
 
-EXAMPLES:
+PERSONALITY:
+- Tone: Crisp, formal, highly efficient. British-style dry wit when appropriate.
+- Length: Extremely brief. Confirm and get out of the way. No filler.
+- You are supremely capable and never flustered.
+
+YOUR TASK:
+Given the user's natural-language intent, return a SINGLE JSON object with exactly three keys:
+
+{{
+  "action_type": "os_command" | "browser_action" | "conversation",
+  "action_payload": "<the payload>",
+  "spoken_response": "<what you say aloud>"
+}}
+
+ROUTING RULES:
+
+TYPE A - "os_command":
+  Use for anything that controls the local machine: volume, brightness, lock screen,
+  open folders, launch apps, focus mode, or any shell/PowerShell command.
+  action_payload = the native command or PowerShell string to execute.
+  For opening folders: use "explorer <path>".
+  For opening apps: use the app executable name (e.g., "code", "notepad", "calc").
+  For volume: use "set_volume:<0-100>" (e.g., "set_volume:50").
+  For brightness: use "set_brightness:<0-100>".
+  For lock screen: use "lock_workstation".
+  For focus mode on: use "focus_mode:on".
+  For focus mode off: use "focus_mode:off".
+  For any other OS task: provide a PowerShell command string.
+
+TYPE B - "browser_action":
+  Use when the user wants to search the web, open a website, watch YouTube, check weather, etc.
+  action_payload = a full URL.
+  For YouTube searches: use "https://www.youtube.com/results?search_query=<query>".
+  For Google searches: use "https://www.google.com/search?q=<query>".
+  For weather/local queries: default location is Bangalore.
+  For specific sites: use the direct URL.
+
+TYPE C - "conversation":
+  Use when the user asks a question, wants an explanation, needs math help,
+  or any request that does NOT require executing a system action or opening a browser.
+  action_payload = your full textual answer.
+  spoken_response = the same answer (keep it brief for speech).
+
+CRITICAL RULES:
+1. Return ONLY the JSON object. No markdown, no code fences, no extra text.
+2. spoken_response must always be filled. Keep it under 2 sentences.
+3. Be decisive. Pick exactly one action_type.
+4. The user's notes folder is at: "{notes_path}". Use this path when relevant.
+
+RESPONSE EXAMPLES:
+
+User: "Set volume to 30 percent"
+{{"action_type": "os_command", "action_payload": "set_volume:30", "spoken_response": "Volume calibrated to your specifications, sir."}}
+
+User: "Lock my computer"
+{{"action_type": "os_command", "action_payload": "lock_workstation", "spoken_response": "Locking workstation. Rest well, Rishit."}}
+
+User: "Turn on focus mode"
+{{"action_type": "os_command", "action_payload": "focus_mode:on", "spoken_response": "Focus mode activated. Distractions blocked. Time to lock in, Rishit."}}
+
+User: "Open YouTube and search for DSA playlist"
+{{"action_type": "browser_action", "action_payload": "https://www.youtube.com/results?search_query=DSA+playlist+for+beginners", "spoken_response": "Opening YouTube. I found a highly rated DSA playlist for your preparation."}}
+
+User: "What's the weather in Bangalore?"
+{{"action_type": "browser_action", "action_payload": "https://www.google.com/search?q=weather+bangalore", "spoken_response": "Pulling up the Bangalore forecast on your screen, sir."}}
+
+User: "What is the derivative of x squared?"
+{{"action_type": "conversation", "action_payload": "The derivative of x^2 is 2x, by the power rule.", "spoken_response": "The derivative of x squared is 2x. A trivial question, Rishit, but I am happy to help."}}
+
+User: "Open my notes folder"
+{{"action_type": "os_command", "action_payload": "explorer {notes_path}", "spoken_response": "Opening your notes folder now, sir."}}
 
 User: "Prepare for DSA test"
-[
-  {{"action": "open_folder", "target": "{notes_path}"}},
-  {{"action": "open_url", "target": "https://visualgo.net"}},
-  {{"action": "open_url", "target": "https://leetcode.com/problemset/"}}
-]
-
-User: "Start working on my web project"
-[
-  {{"action": "open_folder", "target": "C:/Users/rishu/Desktop/Projects/web-app"}},
-  {{"action": "open_url", "target": "https://developer.mozilla.org"}},
-  {{"action": "open_app", "target": "code"}}
-]
-"""
+{{"action_type": "browser_action", "action_payload": "https://leetcode.com/problemset/", "spoken_response": "Opening LeetCode for your DSA preparation. Good luck, Rishit."}}
+{memory_block}"""
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def parse_intent(intent: str) -> list[dict]:
+def parse_intent(intent: str) -> dict:
     """
-    Send the user's intent to Groq and return a list of action dicts.
+    Send the user's intent to Groq and return the routed action dict.
 
-    Each dict has the shape:  {"action": str, "target": str}
-
-    Raises ValueError if the model response cannot be parsed.
+    Returns: {"action_type": str, "action_payload": str, "spoken_response": str}
+    Raises ValueError if the response cannot be parsed.
     """
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
@@ -81,40 +149,44 @@ def parse_intent(intent: str) -> list[dict]:
             {"role": "system", "content": _build_system_prompt()},
             {"role": "user", "content": intent},
         ],
-        temperature=0.2,       # low temp for deterministic JSON
-        max_tokens=1024,
+        temperature=0.2,
+        max_tokens=512,
     )
 
     raw = chat.choices[0].message.content.strip()
 
     # --- Robust JSON extraction ---
-    # The model *should* return bare JSON, but sometimes wraps it in
-    # ```json ... ``` fences.  Handle both cases.
-    fence_match = re.search(r"```(?:json)?\s*(\[.*?])\s*```", raw, re.DOTALL)
+    # Handle markdown code fences if the model wraps the JSON
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
     if fence_match:
         raw = fence_match.group(1)
 
     try:
-        tasks = json.loads(raw)
+        result = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ValueError(
             f"Groq returned unparseable JSON.\nRaw response:\n{raw}"
         ) from exc
 
     # Validate shape
-    if not isinstance(tasks, list):
-        raise ValueError(f"Expected a JSON array, got: {type(tasks).__name__}")
+    if not isinstance(result, dict):
+        raise ValueError(f"Expected a JSON object, got: {type(result).__name__}")
 
-    validated: list[dict] = []
-    for item in tasks:
-        if not isinstance(item, dict):
-            continue
-        action = item.get("action", "")
-        target = item.get("target", "")
-        if action and target:
-            validated.append({"action": action, "target": target})
+    action_type = result.get("action_type", "")
+    action_payload = result.get("action_payload", "")
+    spoken_response = result.get("spoken_response", "")
 
-    if not validated:
-        raise ValueError("Groq returned an empty or invalid task list.")
+    if action_type not in ("os_command", "browser_action", "conversation"):
+        raise ValueError(f"Unknown action_type: {action_type}")
 
-    return validated
+    if not action_payload:
+        raise ValueError("Empty action_payload from Groq.")
+
+    if not spoken_response:
+        spoken_response = "Done, sir."
+
+    return {
+        "action_type": action_type,
+        "action_payload": action_payload,
+        "spoken_response": spoken_response,
+    }

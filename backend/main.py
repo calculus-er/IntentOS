@@ -4,9 +4,12 @@ IntentOS backend entrypoint.
 Lightweight FastAPI server that receives natural-language intents from
 the frontend, delegates to Groq for task planning, executes the
 resulting actions on the host OS, and returns results.
+Voice input via Ctrl+Space hotkey (Phase 7A).
+Edith persona + memory (Phase 7B).
 """
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -18,17 +21,33 @@ from pydantic import BaseModel
 
 from backend.ai_engine import parse_intent
 from backend.executor import execute_tasks
+from backend.memory import save_interaction
 
 # ---------------------------------------------------------------------------
 # Load environment variables from .env
 # ---------------------------------------------------------------------------
 load_dotenv()
 
+
+# ---------------------------------------------------------------------------
+# Lifespan — boot voice engine before accepting requests
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from backend.voice_listener import boot_voice_engine, start_hotkey_listener
+    from backend.tts_engine import regenerate_listening_wav
+    boot_voice_engine()
+    regenerate_listening_wav()
+    start_hotkey_listener()
+    yield
+
+
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="IntentOS", version="0.4.0")
+app = FastAPI(title="IntentOS", version="0.6.0", lifespan=lifespan)
 
 # Serve frontend static files at /ui
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -53,26 +72,14 @@ class IntentRequest(BaseModel):
     intent: str
 
 
-class TaskAction(BaseModel):
-    """A single action the OS engine should perform."""
-    action: str
-    target: str
-
-
-class TaskResult(BaseModel):
-    """Result of executing a single task on the host OS."""
-    action: str
-    target: str
-    status: str
-    detail: str | None = None
-
-
 class IntentResponse(BaseModel):
     """Payload returned to the frontend."""
     intent: str
-    tasks: list[TaskAction]
-    results: list[TaskResult]
-    message: str
+    action_type: str
+    action_payload: str
+    spoken_response: str
+    execution_status: str
+    execution_detail: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -88,35 +95,53 @@ async def root_redirect():
 @app.get("/health")
 async def health_check():
     """Simple liveness probe."""
-    return {"status": "ok", "service": "IntentOS"}
+    return {"status": "ok", "service": "IntentOS", "persona": "Edith"}
 
 
 @app.post("/api/intent", response_model=IntentResponse)
 async def process_intent(payload: IntentRequest):
     """
-    Receive a natural-language intent string, send it to Groq for
-    task decomposition, execute the actions on the host OS, and
-    return the results.
+    Receive a natural-language intent, route it through Edith's brain,
+    execute the action, save to memory, and return the result.
     """
-    # --- Step 1: AI planning ---
+    # --- Step 1: AI routing ---
     try:
-        raw_tasks = parse_intent(payload.intent)
+        routed = parse_intent(payload.intent)
     except EnvironmentError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
-    tasks = [TaskAction(**t) for t in raw_tasks]
+    action_type = routed["action_type"]
+    action_payload = routed["action_payload"]
+    spoken_response = routed["spoken_response"]
 
-    # --- Step 2: OS execution ---
-    raw_results = execute_tasks(raw_tasks)
-    results = [TaskResult(**r) for r in raw_results]
+    # --- Step 2: Execution ---
+    exec_status = "ok"
+    exec_detail = None
 
-    ok_count = sum(1 for r in results if r.status == "ok")
+    if action_type == "conversation":
+        # Nothing to execute — the payload IS the answer
+        exec_detail = "No OS action required."
+    else:
+        # Delegate to the executor
+        task_for_executor = {
+            "action_type": action_type,
+            "action_payload": action_payload,
+        }
+        results = execute_tasks([task_for_executor])
+        if results:
+            exec_status = results[0].get("status", "error")
+            exec_detail = results[0].get("detail")
+
+    # --- Step 3: Save to memory ---
+    save_interaction(payload.intent, action_type, action_payload, spoken_response)
 
     return IntentResponse(
         intent=payload.intent,
-        tasks=tasks,
-        results=results,
-        message=f"Executed {ok_count}/{len(tasks)} action(s) for: {payload.intent}",
+        action_type=action_type,
+        action_payload=action_payload,
+        spoken_response=spoken_response,
+        execution_status=exec_status,
+        execution_detail=exec_detail,
     )

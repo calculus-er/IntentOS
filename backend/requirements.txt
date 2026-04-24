@@ -2,3 +2,9 @@ fastapi
 uvicorn
 groq
 python-dotenv
+keyboard
+pyttsx3
+sounddevice
+numpy
+onnxruntime
+faster-whisper

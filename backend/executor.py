@@ -90,20 +90,59 @@ def execute_tasks(tasks: list[dict]) -> list[dict]:
     """
     Execute a list of action dicts and return a results list.
 
-    Each result dict echoes the original action/target and adds a
-    "status" key ("ok" or "error") plus optional detail.
+    Supports two formats:
+    - New (Phase 7B): {"action_type": ..., "action_payload": ...}
+    - Legacy:         {"action": ..., "target": ...}
     """
     results: list[dict] = []
 
     for task in tasks:
+        action_type = task.get("action_type", "")
+        action_payload = task.get("action_payload", "")
+
+        # ---- New Phase 7B router format ----
+        if action_type == "browser_action":
+            results.append(_open_url(action_payload))
+            continue
+
+        if action_type == "os_command":
+            # Parse structured os_command payloads
+            payload = action_payload.strip()
+
+            if payload.startswith("explorer "):
+                path = payload.replace("explorer ", "", 1).strip()
+                results.append(_open_folder(path))
+            elif payload.startswith("set_volume:"):
+                # Placeholder — Phase 7C will implement pycaw
+                results.append({"action": "set_volume", "target": payload,
+                                "status": "ok", "detail": "Volume handler pending (Phase 7C)."})
+            elif payload.startswith("set_brightness:"):
+                results.append({"action": "set_brightness", "target": payload,
+                                "status": "ok", "detail": "Brightness handler pending (Phase 7C)."})
+            elif payload == "lock_workstation":
+                results.append({"action": "lock_workstation", "target": payload,
+                                "status": "ok", "detail": "Lock handler pending (Phase 7C)."})
+            elif payload.startswith("focus_mode:"):
+                results.append({"action": "focus_mode", "target": payload,
+                                "status": "ok", "detail": "Focus mode handler pending (Phase 7C)."})
+            else:
+                # Treat as app launch or shell command
+                # Check if it looks like a simple app name (no spaces, no flags)
+                if " " not in payload and not payload.startswith(("-", "/")):
+                    results.append(_open_app(payload))
+                else:
+                    results.append(_run_command(payload))
+            continue
+
+        # ---- Legacy format fallback ----
         action = task.get("action", "")
         target = task.get("target", "")
         handler = _HANDLERS.get(action)
 
         if handler is None:
             results.append({
-                "action": action, "target": target,
-                "status": "error", "detail": f"Unknown action: {action}",
+                "action": action or action_type, "target": target or action_payload,
+                "status": "error", "detail": f"Unknown action: {action or action_type}",
             })
             continue
 

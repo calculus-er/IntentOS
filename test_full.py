@@ -15,15 +15,18 @@ result = resolve_video("Samay Raina latest video")
 print("Result:", result)
 print()
 
-# Test 2: AI engine action_type
+# Test 2: AI engine (multi-action shape)
 print("=== Test 2: parse_intent ===")
 routed = parse_intent("play samay raina latest video")
-print("action_type    :", routed["action_type"])
-print("action_payload :", routed["action_payload"])
-print("spoken_response:", routed["spoken_response"])
+print("actions          :", routed["actions"])
+print("spoken_response  :", routed["spoken_response"])
 print()
 
 # Test 3: Executor
 print("=== Test 3: _play_youtube executor ===")
-r = _play_youtube(routed["action_payload"])
+yt_payload = next(
+    (a["action_payload"] for a in routed["actions"] if a["action_type"] == "youtube_play"),
+    "",
+)
+r = _play_youtube(yt_payload)
 print("Executor result:", r)

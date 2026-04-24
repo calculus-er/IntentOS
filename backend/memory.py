@@ -26,7 +26,12 @@ def load_history() -> list[dict]:
     return []
 
 
-def save_interaction(intent: str, action_type: str, action_payload: str, spoken_response: str) -> None:
+def save_interaction(
+    intent: str,
+    action_type: str,
+    action_payload: str,
+    spoken_response: str,
+) -> None:
     """Append a new interaction and trim to MAX_HISTORY."""
     history = load_history()
     history.append({

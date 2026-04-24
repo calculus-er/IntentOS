@@ -5,7 +5,7 @@
  * displays a loading state, then renders the execution results.
  */
 
-const API_URL = "http://127.0.0.1:8000/api/intent";
+const API_URL = "/api/intent";
 
 // ---- DOM refs ----
 const form      = document.getElementById("search-form");

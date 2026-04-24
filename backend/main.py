@@ -7,10 +7,13 @@ resulting actions on the host OS, and returns results.
 """
 
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.ai_engine import parse_intent
@@ -25,7 +28,11 @@ load_dotenv()
 # App setup
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="IntentOS", version="0.3.0")
+app = FastAPI(title="IntentOS", version="0.4.0")
+
+# Serve frontend static files at /ui
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+app.mount("/ui", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
 # Allow the local frontend (served on any localhost port) to call us.
 app.add_middleware(
@@ -73,6 +80,12 @@ class IntentResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @app.get("/")
+async def root_redirect():
+    """Redirect root to the frontend UI."""
+    return RedirectResponse(url="/ui/index.html")
+
+
+@app.get("/health")
 async def health_check():
     """Simple liveness probe."""
     return {"status": "ok", "service": "IntentOS"}

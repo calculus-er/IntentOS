@@ -9,8 +9,9 @@ Edith persona + memory (Phase 7B).
 Multi-action orchestration (Phase 8).
 """
 
+import ctypes
 import json
-import os
+import platform
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -39,6 +40,23 @@ load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if platform.system() == "Windows":
+        try:
+            if ctypes.windll.shell32.IsUserAnAdmin():
+                print(
+                    "[IntentOS] Process is elevated — hosts writes should succeed "
+                    "(hosts read-only flag is cleared automatically). If blocked sites still load "
+                    "in Chrome/Edge, turn off Settings → Privacy → Use secure DNS."
+                )
+            else:
+                print(
+                    "[IntentOS] WARNING: Not running as Administrator. "
+                    "Lock-In hosts blocking requires elevation; volume and Focus Assist "
+                    "registry changes may still apply. Run uvicorn from an elevated Command Prompt."
+                )
+        except Exception:
+            pass
+
     from backend.voice_listener import boot_voice_engine, start_hotkey_listener
     from backend.tts_engine import regenerate_listening_wav, warmup
 
@@ -53,7 +71,7 @@ async def lifespan(app: FastAPI):
 # App setup
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="IntentOS", version="0.8.0", lifespan=lifespan)
+app = FastAPI(title="IntentOS", version="0.9.0", lifespan=lifespan)
 
 # Serve frontend static files at /ui
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"

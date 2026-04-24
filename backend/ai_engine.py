@@ -1,5 +1,5 @@
 """
-AI Engine — Phase 8: Multi-Action Orchestration & Smart File Router
+AI Engine — Phase 8–9: Multi-Action Orchestration, Smart Files, Lock-In
 
 Edith persona. The LLM returns a JSON object with:
   actions: list of { "action_type", "action_payload" }
@@ -32,6 +32,7 @@ ALLOWED_ACTION_TYPES = frozenset(
         "google_search",
         "api_weather",
         "smart_file_open",
+        "os_focus_mode",
     }
 )
 
@@ -102,19 +103,33 @@ ALLOWED action_type VALUES:
 - google_search
 - api_weather
 - smart_file_open
+- os_focus_mode
 
 ROUTING — use MULTIPLE actions when the user clearly wants several things at once
 (e.g. open several study sites AND open the best-matching note file in a folder).
 
 TYPE os_command:
-  Local machine: volume, brightness, lock, folders, apps, focus mode, PowerShell.
+  Local machine: volume, brightness, lock, folders, apps, legacy hosts focus, PowerShell.
   action_payload = string command (same rules as before).
   Folder: "explorer <path>"
   Volume: "set_volume:<0-100>"
   Brightness: "set_brightness:<0-100>"
   Lock: "lock_workstation"
-  Focus: "focus_mode:on" / "focus_mode:off"
+  Legacy broad hosts focus: "focus_mode:on" / "focus_mode:off" (elevated PowerShell, large blocklist).
   Other: PowerShell string.
+
+TYPE os_focus_mode — "Lock-In Protocol" + per-site hosts control:
+  Use for focus sessions, blocking or unblocking specific sites in the browser (via hosts file + IPv4/IPv6),
+  and quieting toast notifications.
+  action_payload is a single STRING command:
+    "activate" (alias "on") — volume 20%, dual-stack hosts blocks for a curated distraction set,
+      and best-effort toast suppression (HKCU; may require signing out of Windows once to fully apply).
+    "deactivate" (alias "off") — removes all IntentOS-managed hosts rows and restores toast registry keys.
+    "block:youtube" / "block:instagram" / "block:tiktok" / "block:news.ycombinator.com" — add blocks for a
+      preset service OR any valid hostname (www. is added automatically when relevant).
+    "unblock:youtube" / "unblock:reddit.com" / "unblock twitter" — remove blocks for that service or exact host.
+  Browsers with Secure DNS (DoH) may ignore the hosts file — tell the user to turn it off if a block "does nothing".
+  Do NOT use os_focus_mode for unrelated OS tasks — use os_command instead.
 
 TYPE browser_action:
   Open a specific known site by URL. action_payload = full https URL string.
@@ -188,6 +203,36 @@ User: "Open LeetCode and my arrays notes"
   ],
   "spoken_response": "LeetCode and your arrays note are open, sir."
 }}
+
+User: "I need to lock in" or "Focus mode — serious study time"
+{{
+  "actions": [{{"action_type": "os_focus_mode", "action_payload": "activate"}}],
+  "spoken_response": "Time to lock in, sir. Distractions curtailed and notifications silenced."
+}}
+
+User: "Unblock YouTube only, I need it for lectures"
+{{
+  "actions": [{{"action_type": "os_focus_mode", "action_payload": "unblock:youtube"}}],
+  "spoken_response": "YouTube is reachable again; other blocks remain, sir."
+}}
+
+User: "Block TikTok"
+{{
+  "actions": [{{"action_type": "os_focus_mode", "action_payload": "block:tiktok"}}],
+  "spoken_response": "That destination is now firewalled at the hosts level, sir."
+}}
+
+User: "Block Facebook"
+{{
+  "actions": [{{"action_type": "os_focus_mode", "action_payload": "block:facebook"}}],
+  "spoken_response": "Facebook domains are blocked at the resolver, sir."
+}}
+
+User: "End focus session" or "I'm done locking in"
+{{
+  "actions": [{{"action_type": "os_focus_mode", "action_payload": "deactivate"}}],
+  "spoken_response": "Lock-In lifted. Toasts restored and DNS rules cleared, Rishit."
+}}
 {memory_block}"""
 
 
@@ -248,6 +293,24 @@ def _validate_actions(actions: list) -> None:
                 item["action_payload"] = ap
             else:
                 raise ValueError("api_weather action_payload must be a string (use '').")
+            continue
+
+        if at == "os_focus_mode":
+            if not isinstance(ap, str) or not ap.strip():
+                raise ValueError(
+                    f"os_focus_mode at actions[{i}] requires a non-empty string payload."
+                )
+            p = ap.strip().lower()
+            if p in ("activate", "on"):
+                item["action_payload"] = "activate"
+            elif p in ("deactivate", "off"):
+                item["action_payload"] = "deactivate"
+            elif p.startswith("unblock") or p.startswith("block"):
+                item["action_payload"] = ap.strip()
+            else:
+                raise ValueError(
+                    f"os_focus_mode at actions[{i}]: use activate, deactivate, block:…, or unblock:… (got {ap!r})"
+                )
             continue
 
         if at == "conversation":

@@ -1,9 +1,9 @@
 """
-AI Engine — Phase 7B: The Brain & Universal JSON Router
+AI Engine -- Phase 7B: The Brain & Universal JSON Router
 
 Edith persona.  Every response is a JSON object with three keys:
-  action_type   :  "os_command" | "browser_action" | "conversation" | "youtube_play"
-  action_payload:  the command / URL / answer text / video request
+  action_type   :  "os_command" | "browser_action" | "conversation" | "youtube_play" | "google_search"
+  action_payload:  the command / URL / answer text / video request / search query
   spoken_response: what Edith says aloud (JARVIS persona)
 """
 
@@ -55,7 +55,7 @@ YOUR TASK:
 Given the user's natural-language intent, return a SINGLE JSON object with exactly three keys:
 
 {{
-  "action_type": "os_command" | "browser_action" | "conversation" | "youtube_play",
+  "action_type": "os_command" | "browser_action" | "conversation" | "youtube_play" | "google_search",
   "action_payload": "<the payload>",
   "spoken_response": "<what you say aloud>"
 }}
@@ -76,12 +76,19 @@ TYPE A - "os_command":
   For any other OS task: provide a PowerShell command string.
 
 TYPE B - "browser_action":
-  Use when the user wants to search the web, open a website, check weather, etc. (NOT YouTube videos).
-  action_payload = a full URL.
-  For Google searches: use "https://www.google.com/search?q=<query>".
-  For weather/local queries: default location is Bangalore.
-  For specific sites: use the direct URL.
-  Do NOT use this for YouTube video requests — use TYPE D instead.
+  Use ONLY when the user wants to open a specific, known website directly by name.
+  Examples: "open leetcode", "open github", "open reddit", "open stackoverflow".
+  action_payload = the direct URL of that website.
+  Do NOT use this for search queries -- use TYPE E instead.
+  Do NOT use this for YouTube video requests -- use TYPE D instead.
+
+TYPE E - "google_search":
+  Use when the user wants to search or look something up on the internet.
+  This includes: "search X", "google X", "look up X", "how to X", "what is X",
+  "explain X", "find info on X", weather queries, news queries, technical questions.
+  action_payload = the raw search query (natural language, verbatim from the user).
+  Do NOT construct a URL yourself -- the search classifier will decide deep vs basic.
+  spoken_response = brief confirmation, e.g. "Searching that up for you, sir."
 
 TYPE D - "youtube_play":
   Use when the user wants to play or open a specific YouTube video, channel, or creator's content.
@@ -115,7 +122,7 @@ User: "Turn on focus mode"
 {{"action_type": "os_command", "action_payload": "focus_mode:on", "spoken_response": "Focus mode activated. Distractions blocked. Time to lock in, Rishit."}}
 
 User: "What's the weather in Bangalore?"
-{{"action_type": "browser_action", "action_payload": "https://www.google.com/search?q=weather+bangalore", "spoken_response": "Pulling up the Bangalore forecast on your screen, sir."}}
+{{"action_type": "google_search", "action_payload": "weather in Bangalore today", "spoken_response": "Pulling up the Bangalore forecast for you, sir."}}
 
 User: "What is the derivative of x squared?"
 {{"action_type": "conversation", "action_payload": "The derivative of x^2 is 2x, by the power rule.", "spoken_response": "The derivative of x squared is 2x. A trivial question, Rishit, but I am happy to help."}}
@@ -123,8 +130,20 @@ User: "What is the derivative of x squared?"
 User: "Open my notes folder"
 {{"action_type": "os_command", "action_payload": "explorer {notes_path}", "spoken_response": "Opening your notes folder now, sir."}}
 
-User: "Prepare for DSA test"
+User: "Open LeetCode"
 {{"action_type": "browser_action", "action_payload": "https://leetcode.com/problemset/", "spoken_response": "Opening LeetCode for your DSA preparation. Good luck, Rishit."}}
+
+User: "Search how to reverse a linked list in Python"
+{{"action_type": "google_search", "action_payload": "how to reverse a linked list in Python", "spoken_response": "Searching that up for you, sir."}}
+
+User: "What is diabetes"
+{{"action_type": "google_search", "action_payload": "what is diabetes", "spoken_response": "Looking that up for you right away, sir."}}
+
+User: "Google funny cat videos"
+{{"action_type": "google_search", "action_payload": "funny cat videos", "spoken_response": "Searching for funny cat videos, sir."}}
+
+User: "How does quantum computing work"
+{{"action_type": "google_search", "action_payload": "how does quantum computing work", "spoken_response": "Pulling up an explanation on quantum computing, sir."}}
 
 User: "Play Samay Raina's latest video"
 {{"action_type": "youtube_play", "action_payload": "Samay Raina latest video", "spoken_response": "Locating Samay Raina's latest upload now, sir."}}
@@ -196,7 +215,7 @@ def parse_intent(intent: str) -> dict:
     action_payload = result.get("action_payload", "")
     spoken_response = result.get("spoken_response", "")
 
-    if action_type not in ("os_command", "browser_action", "conversation", "youtube_play"):
+    if action_type not in ("os_command", "browser_action", "conversation", "youtube_play", "google_search"):
         raise ValueError(f"Unknown action_type: {action_type}")
 
     if not action_payload:

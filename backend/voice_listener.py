@@ -150,8 +150,14 @@ class _SileroVAD:
 
 def _play_listening():
     """Play the pre-rendered listening.wav (blocking, ~0.5 s)."""
-    import winsound
-    winsound.PlaySound(str(LISTENING_WAV), winsound.SND_FILENAME)
+    try:
+        import soundfile as sf
+        import sounddevice as sd
+        data, fs = sf.read(str(LISTENING_WAV))
+        sd.play(data, fs)
+        sd.wait()
+    except Exception as exc:
+        print(f"[Edith] Failed to play listening.wav: {exc}")
 
 
 def _record_with_vad(

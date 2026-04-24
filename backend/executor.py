@@ -10,6 +10,7 @@ import ctypes
 import os
 import platform
 import subprocess
+import urllib.parse
 import webbrowser
 
 
@@ -121,12 +122,14 @@ def _lock_workstation() -> dict:
 
 # Domains to block in focus mode
 _FOCUS_BLOCK_LIST = [
-    "www.youtube.com", "youtube.com",
-    "www.reddit.com", "reddit.com",
-    "www.twitter.com", "twitter.com", "x.com",
+    "www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be",
+    "www.reddit.com", "reddit.com", "old.reddit.com",
+    "www.twitter.com", "twitter.com", "x.com", "mobile.twitter.com",
     "www.instagram.com", "instagram.com",
-    "www.facebook.com", "facebook.com",
+    "www.facebook.com", "facebook.com", "m.facebook.com",
     "www.tiktok.com", "tiktok.com",
+    "www.netflix.com", "netflix.com",
+    "www.twitch.tv", "twitch.tv"
 ]
 
 _HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
@@ -134,37 +137,96 @@ _FOCUS_MARKER = "# IntentOS-Focus"
 
 
 def _focus_mode(on: bool) -> dict:
-    """Toggle focus mode by editing the Windows hosts file."""
-    try:
-        with open(_HOSTS_PATH, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+    """Toggle focus mode by editing the Windows hosts file via elevated PowerShell."""
+    import tempfile
+    import time as _time
 
+    try:
+        marker = _FOCUS_MARKER
+        hosts = _HOSTS_PATH
+        tmp = tempfile.gettempdir()
+        log_path = os.path.join(tmp, "intentos_focus.log")
+
+        # Build the PowerShell script content with error logging
         if on:
-            # Remove any old focus entries, then add fresh ones
-            lines = [l for l in lines if _FOCUS_MARKER not in l]
-            for domain in _FOCUS_BLOCK_LIST:
-                lines.append(f"127.0.0.1  {domain}  {_FOCUS_MARKER}\n")
+            add_cmds = "\n".join(
+                f'Add-Content -Path $h -Value "127.0.0.1  {d}  {marker}"'
+                for d in _FOCUS_BLOCK_LIST
+            )
+            core = (
+                f'$content = Get-Content $h | Where-Object {{ $_ -notmatch [regex]::Escape("{marker}") }}\n'
+                f'Set-Content -Path $h -Value $content -Force\n'
+                f'{add_cmds}\n'
+                f'ipconfig /flushdns | Out-Null\n'
+            )
             mode_str = "ON"
         else:
-            # Remove focus entries
-            lines = [l for l in lines if _FOCUS_MARKER not in l]
+            core = (
+                f'$content = Get-Content $h | Where-Object {{ $_ -notmatch [regex]::Escape("{marker}") }}\n'
+                f'Set-Content -Path $h -Value $content -Force\n'
+                f'ipconfig /flushdns | Out-Null\n'
+            )
             mode_str = "OFF"
 
-        with open(_HOSTS_PATH, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-
-        # Flush DNS cache so changes take effect immediately
-        subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-Command", "ipconfig /flushdns"],
-            capture_output=True, timeout=5,
+        script = (
+            f'$h = "{hosts}"\n'
+            f'$log = "{log_path}"\n'
+            f'try {{\n'
+            f'{core}'
+            f'"SUCCESS" | Out-File $log -Force\n'
+            f'}} catch {{\n'
+            f'$_.Exception.Message | Out-File $log -Force\n'
+            f'}}\n'
         )
 
-        return {"action": "focus_mode", "target": mode_str,
-                "status": "ok", "detail": f"Focus mode {mode_str}. {'Distractions blocked.' if on else 'Restrictions lifted.'}"}
-    except PermissionError:
-        return {"action": "focus_mode", "target": "on" if on else "off",
-                "status": "error", "detail": "Permission denied. Run server as Administrator."}
+        # Write temp .ps1 script
+        script_path = os.path.join(tmp, "intentos_focus.ps1")
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(script)
+
+        # Remove old log
+        if os.path.exists(log_path):
+            os.unlink(log_path)
+
+        # Check if already admin
+        is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+
+        if is_admin:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-File", script_path],
+                capture_output=True, text=True, timeout=15,
+            )
+        else:
+            # ShellExecuteW with "runas" — SW_SHOWNORMAL=1 so user sees UAC
+            ret = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", "powershell.exe",
+                f'-NoProfile -ExecutionPolicy Bypass -File "{script_path}"',
+                None, 1  # SW_SHOWNORMAL
+            )
+            if ret <= 32:
+                return {"action": "focus_mode", "target": mode_str,
+                        "status": "error",
+                        "detail": f"UAC elevation failed (code {ret}). Click Yes on the admin prompt."}
+            # Wait for elevated process
+            _time.sleep(5)
+
+        # Check log for result
+        if os.path.exists(log_path):
+            with open(log_path, "r") as lf:
+                log_content = lf.read().strip()
+            if "SUCCESS" in log_content:
+                return {"action": "focus_mode", "target": mode_str,
+                        "status": "ok",
+                        "detail": f"Focus mode {mode_str}. {'Distractions blocked.' if on else 'Restrictions lifted.'}"}
+            else:
+                return {"action": "focus_mode", "target": mode_str,
+                        "status": "error", "detail": f"Script error: {log_content[:200]}"}
+        else:
+            return {"action": "focus_mode", "target": mode_str,
+                    "status": "error",
+                    "detail": "Elevated script did not run. Did you click Yes on the UAC prompt?"}
+
     except Exception as exc:
         return {"action": "focus_mode", "target": "on" if on else "off",
                 "status": "error", "detail": str(exc)}
@@ -255,6 +317,63 @@ def _search_google(query: str) -> dict:
         }
 
 
+def _fetch_weather() -> dict:
+    """
+    Phase 8 — Smart Weather Integration.
+    1. IP lookup for city  2. wttr.in for live weather
+    3. Construct Edith persona TTS  4. Open visual forecast
+    """
+    import urllib.request
+    import json as _json
+
+    fallback_spoken = "I am unable to reach the meteorological servers at this moment, sir."
+
+    try:
+        # Step 1: Dynamic location via IP
+        loc_req = urllib.request.urlopen("http://ip-api.com/json/", timeout=5)
+        loc_data = _json.loads(loc_req.read())
+        city = loc_data.get("city", "")
+        if not city:
+            return {
+                "action": "api_weather", "target": "weather",
+                "status": "error", "detail": "Could not determine your city.",
+                "spoken_response": fallback_spoken,
+            }
+
+        # Step 2: Fetch live weather from wttr.in
+        weather_url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
+        weather_req = urllib.request.urlopen(weather_url, timeout=5)
+        weather_data = _json.loads(weather_req.read())
+
+        current = weather_data.get("current_condition", [{}])[0]
+        temp_c = current.get("FeelsLikeC", current.get("temp_C", "?"))
+        condition_list = current.get("weatherDesc", [{}])
+        condition = condition_list[0].get("value", "unknown") if condition_list else "unknown"
+
+        # Short and crisp — no city name, no extras
+        spoken = f"It is currently {temp_c} degrees and {condition.lower()}, sir."
+
+        # Step 4: Open visual weather widget
+        webbrowser.open(f"https://www.google.com/search?q=weather+in+{urllib.parse.quote(city)}")
+
+        return {
+            "action": "api_weather",
+            "target": f"weather in {city}",
+            "status": "ok",
+            "detail": f"{city}: {temp_c}C, {condition}",
+            "spoken_response": spoken,
+        }
+
+    except Exception as exc:
+        return {
+            "action": "api_weather",
+            "target": "weather",
+            "status": "error",
+            "detail": str(exc),
+            "spoken_response": fallback_spoken,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Legacy dispatcher
 # ---------------------------------------------------------------------------
@@ -296,6 +415,10 @@ def execute_tasks(tasks: list[dict]) -> list[dict]:
 
         if action_type == "google_search":
             results.append(_search_google(action_payload))
+            continue
+
+        if action_type == "api_weather":
+            results.append(_fetch_weather())
             continue
 
         if action_type == "os_command":

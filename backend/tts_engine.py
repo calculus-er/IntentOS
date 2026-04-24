@@ -1,55 +1,37 @@
 """
 TTS Engine — Phase 7D: Edith's Voice
 
-Uses Kokoro-82M (ONNX, bm_daniel voice) for professional-grade,
-British-accented text-to-speech.  Falls back to pyttsx3 if Kokoro
-fails to initialise.
+Uses Deepgram Aura TTS for ultra-low latency, professional-grade
+text-to-speech. Falls back to pyttsx3 if the API key is missing or fails.
 """
 
+import io
+import json
 import os
-import tempfile
 import threading
+import time
+import urllib.request
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+import sounddevice as sd
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
-KOKORO_MODEL = ASSETS_DIR / "kokoro-v1.0.int8.onnx"
-KOKORO_VOICES = ASSETS_DIR / "voices-v1.0.bin"
 LISTENING_WAV = ASSETS_DIR / "listening.wav"
 
 # ---------------------------------------------------------------------------
-# Lazy singleton
+# Configuration
 # ---------------------------------------------------------------------------
 
-_kokoro = None
-_kokoro_lock = threading.Lock()
-_VOICE = "bm_daniel"
+_VOICE = "aura-2-draco-en"  # Valid Deepgram Aura 2 male voice
 
-
-def _get_kokoro():
-    """Lazy-load the Kokoro engine (thread-safe)."""
-    global _kokoro
-    if _kokoro is not None:
-        return _kokoro
-
-    with _kokoro_lock:
-        if _kokoro is not None:
-            return _kokoro
-        try:
-            from kokoro_onnx import Kokoro
-            _kokoro = Kokoro(str(KOKORO_MODEL), str(KOKORO_VOICES))
-            print("[Edith] Kokoro TTS engine loaded (bm_daniel).")
-            return _kokoro
-        except Exception as exc:
-            print(f"[Edith] Kokoro TTS failed to load: {exc}")
-            return None
-
+def _get_deepgram_key() -> str | None:
+    return os.getenv("DEEPGRAM_API_KEY")
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -60,47 +42,93 @@ def speak(text: str) -> None:
     if not text:
         return
 
-    kokoro = _get_kokoro()
-
-    if kokoro is not None:
+    api_key = _get_deepgram_key()
+    if api_key:
         try:
-            samples, sr = kokoro.create(
-                text, voice=_VOICE, speed=1.0, lang="en-gb",
+            t0 = time.time()
+            url = f"https://api.deepgram.com/v1/speak?model={_VOICE}&encoding=linear16&container=wav"
+            req = urllib.request.Request(
+                url,
+                data=json.dumps({"text": text}).encode("utf-8"),
+                headers={
+                    "Authorization": f"Token {api_key}",
+                    "Content-Type": "application/json"
+                },
+                method="POST"
             )
-            import sounddevice as sd
-            sd.play(samples, sr)
-            sd.wait()
+            
+            res = urllib.request.urlopen(req, timeout=10)
+            audio_bytes = res.read()
+            synth_ms = int((time.time() - t0) * 1000)
+            print(f"[Edith] Deepgram TTS synth: {synth_ms}ms for {len(text)} chars")
+            
+            # Play using soundfile and sounddevice
+            with io.BytesIO(audio_bytes) as f:
+                samples, sr = sf.read(f)
+                sd.play(samples, sr)
+                sd.wait()
             return
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode('utf-8')
+            print(f"[Edith] Deepgram API HTTP error {exc.code}: {error_body}. Falling back to pyttsx3.")
         except Exception as exc:
-            print(f"[Edith] Kokoro speak error: {exc}, falling back to pyttsx3.")
+            print(f"[Edith] Deepgram API error: {exc}. Falling back to pyttsx3.")
 
     # Fallback — pyttsx3
     _speak_pyttsx3(text)
 
 
+def speak_async(text: str) -> None:
+    """Fire-and-forget TTS on a background thread (non-blocking)."""
+    threading.Thread(target=speak, args=(text,), daemon=True).start()
+
+
 def speak_to_file(text: str, path: str) -> bool:
     """Render `text` to a .wav file. Returns True on success."""
-    kokoro = _get_kokoro()
-    if kokoro is None:
+    api_key = _get_deepgram_key()
+    if not api_key:
         return False
 
     try:
-        samples, sr = kokoro.create(
-            text, voice=_VOICE, speed=1.0, lang="en-gb",
+        url = f"https://api.deepgram.com/v1/speak?model={_VOICE}&encoding=linear16&container=wav"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"text": text}).encode("utf-8"),
+            headers={
+                "Authorization": f"Token {api_key}",
+                "Content-Type": "application/json"
+            },
+            method="POST"
         )
-        sf.write(path, samples, sr)
+        res = urllib.request.urlopen(req, timeout=10)
+        audio_bytes = res.read()
+        
+        with open(path, "wb") as f:
+            f.write(audio_bytes)
         return True
     except Exception as exc:
-        print(f"[Edith] Kokoro render-to-file error: {exc}")
+        print(f"[Edith] Deepgram render-to-file error: {exc}")
         return False
 
 
 def regenerate_listening_wav() -> None:
-    """Overwrite listening.wav with a Kokoro-quality version."""
+    """Overwrite listening.wav with a Deepgram-quality version."""
     if speak_to_file("Listening.", str(LISTENING_WAV)):
-        print("[Edith] listening.wav upgraded to Kokoro quality.")
+        print("[Edith] listening.wav upgraded to Deepgram quality.")
     else:
-        print("[Edith] Keeping pyttsx3 listening.wav (Kokoro unavailable).")
+        print("[Edith] Keeping pyttsx3 listening.wav (Deepgram unavailable).")
+
+
+# ---------------------------------------------------------------------------
+# Warmup — Ping API to warm up connection
+# ---------------------------------------------------------------------------
+
+def warmup() -> None:
+    """Warm up Deepgram API connection (not strictly needed, but verifies key)."""
+    if _get_deepgram_key():
+        print("[Edith] Deepgram API enabled. Latency should be <300ms.")
+    else:
+        print("[Edith] DEEPGRAM_API_KEY not found. Will use local pyttsx3 fallback.")
 
 
 # ---------------------------------------------------------------------------

@@ -36,9 +36,10 @@ load_dotenv()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from backend.voice_listener import boot_voice_engine, start_hotkey_listener
-    from backend.tts_engine import regenerate_listening_wav
+    from backend.tts_engine import regenerate_listening_wav, warmup
     boot_voice_engine()
     regenerate_listening_wav()
+    warmup()
     start_hotkey_listener()
     yield
 
@@ -123,6 +124,21 @@ async def process_intent(payload: IntentRequest):
     if action_type == "conversation":
         # Nothing to execute — the payload IS the answer
         exec_detail = "No OS action required."
+    elif action_type == "api_weather":
+        # Weather handler returns its own spoken_response and detail
+        task_for_executor = {
+            "action_type": action_type,
+            "action_payload": action_payload,
+        }
+        results = execute_tasks([task_for_executor])
+        if results:
+            exec_status = results[0].get("status", "error")
+            exec_detail = results[0].get("detail")
+            # Override the blank LLM fields with weather data
+            if results[0].get("spoken_response"):
+                spoken_response = results[0]["spoken_response"]
+            if results[0].get("target"):
+                action_payload = results[0]["target"]
     else:
         # Delegate to the executor
         task_for_executor = {

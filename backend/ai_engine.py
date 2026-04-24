@@ -2,7 +2,7 @@
 AI Engine -- Phase 7B: The Brain & Universal JSON Router
 
 Edith persona.  Every response is a JSON object with three keys:
-  action_type   :  "os_command" | "browser_action" | "conversation" | "youtube_play" | "google_search"
+  action_type   :  "os_command" | "browser_action" | "conversation" | "youtube_play" | "google_search" | "api_weather"
   action_payload:  the command / URL / answer text / video request / search query
   spoken_response: what Edith says aloud (JARVIS persona)
 """
@@ -55,7 +55,7 @@ YOUR TASK:
 Given the user's natural-language intent, return a SINGLE JSON object with exactly three keys:
 
 {{
-  "action_type": "os_command" | "browser_action" | "conversation" | "youtube_play" | "google_search",
+  "action_type": "os_command" | "browser_action" | "conversation" | "youtube_play" | "google_search" | "api_weather",
   "action_payload": "<the payload>",
   "spoken_response": "<what you say aloud>"
 }}
@@ -98,6 +98,13 @@ TYPE D - "youtube_play":
   Do NOT try to construct a URL yourself — the resolver will find the exact video.
   spoken_response = brief confirmation, e.g. "Finding that for you now, sir."
 
+TYPE F - "api_weather":
+  Use when the user asks about the current weather, forecast, or temperature.
+  Examples: "what's the weather?", "how's the weather today?", "is it going to rain?", "temperature outside?"
+  action_payload = "" (leave blank, the backend fetches data dynamically)
+  spoken_response = "" (leave blank, the backend constructs the TTS string)
+  Return EXACTLY: {{"action_type": "api_weather", "action_payload": "", "spoken_response": ""}}
+
 TYPE C - "conversation":
   Use when the user asks a question, wants an explanation, needs math help,
   or any request that does NOT require executing a system action or opening a browser.
@@ -121,8 +128,14 @@ User: "Lock my computer"
 User: "Turn on focus mode"
 {{"action_type": "os_command", "action_payload": "focus_mode:on", "spoken_response": "Focus mode activated. Distractions blocked. Time to lock in, Rishit."}}
 
-User: "What's the weather in Bangalore?"
-{{"action_type": "google_search", "action_payload": "weather in Bangalore today", "spoken_response": "Pulling up the Bangalore forecast for you, sir."}}
+User: "What's the weather?"
+{{"action_type": "api_weather", "action_payload": "", "spoken_response": ""}}
+
+User: "How's the weather today?"
+{{"action_type": "api_weather", "action_payload": "", "spoken_response": ""}}
+
+User: "Is it going to rain?"
+{{"action_type": "api_weather", "action_payload": "", "spoken_response": ""}}
 
 User: "What is the derivative of x squared?"
 {{"action_type": "conversation", "action_payload": "The derivative of x^2 is 2x, by the power rule.", "spoken_response": "The derivative of x squared is 2x. A trivial question, Rishit, but I am happy to help."}}
@@ -215,10 +228,10 @@ def parse_intent(intent: str) -> dict:
     action_payload = result.get("action_payload", "")
     spoken_response = result.get("spoken_response", "")
 
-    if action_type not in ("os_command", "browser_action", "conversation", "youtube_play", "google_search"):
+    if action_type not in ("os_command", "browser_action", "conversation", "youtube_play", "google_search", "api_weather"):
         raise ValueError(f"Unknown action_type: {action_type}")
 
-    if not action_payload:
+    if not action_payload and action_type != "api_weather":
         raise ValueError("Empty action_payload from Groq.")
 
     if not spoken_response:

@@ -26,6 +26,7 @@ const TYPE_META = {
   browser_action:  { icon: "🌐", label: "Browser Action" },
   conversation:    { icon: "💬", label: "Conversation" },
   youtube_play:    { icon: "🎥", label: "Now Playing" },
+  google_search:   { icon: "🔍", label: "Web Search" },
 };
 
 // ---- Render helpers ----

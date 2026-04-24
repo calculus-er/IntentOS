@@ -218,12 +218,38 @@ def _play_youtube(request: str) -> dict:
                 "action": "youtube_play",
                 "target": search_url,
                 "status": "ok",
-                "detail": f"Exact video not found — opened YouTube search for: {request}",
+                "detail": f"Exact video not found - opened YouTube search for: {request}",
             }
     except Exception as exc:
         return {
             "action": "youtube_play",
             "target": request,
+            "status": "error",
+            "detail": str(exc),
+        }
+
+
+def _search_google(query: str) -> dict:
+    """Classify the search query and open deep site or basic Google search."""
+    try:
+        from backend.google_resolver import resolve_search
+        resolved = resolve_search(query)
+        url = resolved.get("url", "https://www.google.com/search?q=" + query)
+        search_type = resolved.get("search_type", "basic")
+        reason = resolved.get("reason", "")
+
+        webbrowser.open(url)
+        label = "Deep search" if search_type == "deep" else "Basic search"
+        return {
+            "action": "google_search",
+            "target": url,
+            "status": "ok",
+            "detail": f"{label}: {reason}",
+        }
+    except Exception as exc:
+        return {
+            "action": "google_search",
+            "target": query,
             "status": "error",
             "detail": str(exc),
         }
@@ -266,6 +292,10 @@ def execute_tasks(tasks: list[dict]) -> list[dict]:
 
         if action_type == "youtube_play":
             results.append(_play_youtube(action_payload))
+            continue
+
+        if action_type == "google_search":
+            results.append(_search_google(action_payload))
             continue
 
         if action_type == "os_command":

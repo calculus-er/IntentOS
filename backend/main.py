@@ -2,8 +2,8 @@
 IntentOS backend entrypoint.
 
 Lightweight FastAPI server that receives natural-language intents from
-the frontend, delegates to Groq for task planning, and returns a
-structured action list.
+the frontend, delegates to Groq for task planning, executes the
+resulting actions on the host OS, and returns results.
 """
 
 import os
@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend.ai_engine import parse_intent
+from backend.executor import execute_tasks
 
 # ---------------------------------------------------------------------------
 # Load environment variables from .env
@@ -24,7 +25,7 @@ load_dotenv()
 # App setup
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="IntentOS", version="0.2.0")
+app = FastAPI(title="IntentOS", version="0.3.0")
 
 # Allow the local frontend (served on any localhost port) to call us.
 app.add_middleware(
@@ -51,10 +52,19 @@ class TaskAction(BaseModel):
     target: str
 
 
+class TaskResult(BaseModel):
+    """Result of executing a single task on the host OS."""
+    action: str
+    target: str
+    status: str
+    detail: str | None = None
+
+
 class IntentResponse(BaseModel):
     """Payload returned to the frontend."""
     intent: str
     tasks: list[TaskAction]
+    results: list[TaskResult]
     message: str
 
 
@@ -72,8 +82,10 @@ async def health_check():
 async def process_intent(payload: IntentRequest):
     """
     Receive a natural-language intent string, send it to Groq for
-    task decomposition, and return the resulting action list.
+    task decomposition, execute the actions on the host OS, and
+    return the results.
     """
+    # --- Step 1: AI planning ---
     try:
         raw_tasks = parse_intent(payload.intent)
     except EnvironmentError as exc:
@@ -83,8 +95,15 @@ async def process_intent(payload: IntentRequest):
 
     tasks = [TaskAction(**t) for t in raw_tasks]
 
+    # --- Step 2: OS execution ---
+    raw_results = execute_tasks(raw_tasks)
+    results = [TaskResult(**r) for r in raw_results]
+
+    ok_count = sum(1 for r in results if r.status == "ok")
+
     return IntentResponse(
         intent=payload.intent,
         tasks=tasks,
-        message=f"Planned {len(tasks)} action(s) for: {payload.intent}",
+        results=results,
+        message=f"Executed {ok_count}/{len(tasks)} action(s) for: {payload.intent}",
     )

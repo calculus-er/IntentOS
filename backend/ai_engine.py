@@ -17,7 +17,14 @@ from groq import Groq
 
 MODEL = "llama-3.3-70b-versatile"
 
-SYSTEM_PROMPT = """You are IntentOS, an AI that converts a user's natural-language intent into a precise JSON action plan that a local operating system agent can execute.
+def _build_system_prompt() -> str:
+    """Build the system prompt, injecting the real notes folder path."""
+    notes_path = os.getenv(
+        "NOTES_FOLDER_PATH",
+        "./mock_system_files/DSA_Notes",
+    ).replace("\\", "/")
+
+    return f"""You are IntentOS, an AI that converts a user's natural-language intent into a precise JSON action plan that a local operating system agent can execute.
 
 RULES:
 1. Return ONLY a valid JSON array — no markdown, no commentary, no code fences.
@@ -25,23 +32,24 @@ RULES:
    - "action": one of "open_folder", "open_url", "open_app", "run_command"
    - "target": the full path, URL, application name, or shell command string
 3. Choose realistic, helpful targets. For learning intents, pick well-known educational URLs (e.g., LeetCode, VisualGo, GeeksforGeeks, YouTube tutorials).
-4. For folder paths on Windows, use forward slashes (e.g., "C:/Users/rishu/Desktop/DSA_Notes").
+4. For folder paths on Windows, use forward slashes (e.g., "C:/Users/rishu/Desktop/Notes").
 5. Return between 1 and 5 actions. Keep it focused and practical.
+6. The user's local notes/study folder is located at: "{notes_path}". Use this exact path when a folder action is relevant.
 
 EXAMPLES:
 
 User: "Prepare for DSA test"
 [
-  {"action": "open_folder", "target": "C:/Users/rishu/Desktop/DSA_Notes"},
-  {"action": "open_url", "target": "https://visualgo.net"},
-  {"action": "open_url", "target": "https://leetcode.com/problemset/"}
+  {{"action": "open_folder", "target": "{notes_path}"}},
+  {{"action": "open_url", "target": "https://visualgo.net"}},
+  {{"action": "open_url", "target": "https://leetcode.com/problemset/"}}
 ]
 
 User: "Start working on my web project"
 [
-  {"action": "open_folder", "target": "C:/Users/rishu/Desktop/Projects/web-app"},
-  {"action": "open_url", "target": "https://developer.mozilla.org"},
-  {"action": "open_app", "target": "code"}
+  {{"action": "open_folder", "target": "C:/Users/rishu/Desktop/Projects/web-app"}},
+  {{"action": "open_url", "target": "https://developer.mozilla.org"}},
+  {{"action": "open_app", "target": "code"}}
 ]
 """
 
@@ -70,7 +78,7 @@ def parse_intent(intent: str) -> list[dict]:
     chat = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _build_system_prompt()},
             {"role": "user", "content": intent},
         ],
         temperature=0.2,       # low temp for deterministic JSON

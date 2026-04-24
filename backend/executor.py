@@ -11,7 +11,11 @@ import difflib
 import json
 import os
 import platform
+import re
+import stat
 import subprocess
+import sys
+import tempfile
 import urllib.parse
 import webbrowser
 
@@ -138,6 +142,583 @@ _HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
 _FOCUS_MARKER = "# IntentOS-Focus"
 
 
+def _effective_hosts_path() -> str:
+    """
+    Path to the real hosts file on disk.
+
+    32-bit Python on 64-bit Windows redirects ``System32`` to ``SysWOW64``;
+    use ``Sysnative`` so edits apply to the same file the OS resolver uses.
+    """
+    if platform.system() != "Windows":
+        return _HOSTS_PATH
+    windir = os.environ.get("SystemRoot", r"C:\Windows")
+    if sys.maxsize <= 2**32:
+        sysnative = os.path.join(windir, "Sysnative", "drivers", "etc", "hosts")
+        if os.path.isfile(sysnative):
+            return sysnative
+    return os.path.join(windir, "System32", "drivers", "etc", "hosts")
+
+
+def _ensure_hosts_writable(path: str) -> None:
+    """Clear read-only attribute; hosts is often +R which blocks writes even as Admin."""
+    try:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    except OSError:
+        pass
+    try:
+        FILE_ATTRIBUTE_READONLY = 0x00000001
+        INVALID = 0xFFFFFFFF
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(path)
+        if attrs != INVALID and (attrs & FILE_ATTRIBUTE_READONLY):
+            ctypes.windll.kernel32.SetFileAttributesW(path, attrs & ~FILE_ATTRIBUTE_READONLY)
+    except Exception:
+        pass
+
+
+def _lockin_hosts_write(lines: list[str]) -> None:
+    """Write hosts via temp file + replace (same volume). Clears read-only first."""
+    path = _effective_hosts_path()
+    _ensure_hosts_writable(path)
+    host_dir = os.path.dirname(path)
+    tmp_path: str | None = None
+    try:
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix="intentos_hosts_", suffix=".tmp", dir=host_dir)
+        except OSError:
+            fd, tmp_path = tempfile.mkstemp(prefix="intentos_hosts_", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.writelines(lines)
+        tmp_abs = os.path.abspath(tmp_path)
+        try:
+            os.replace(tmp_abs, path)
+            tmp_path = None
+        except OSError:
+            # Different-volume temp (rare): fall back to in-place write
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                with open(tmp_abs, "r", encoding="utf-8", errors="replace") as t:
+                    f.write(t.read())
+            try:
+                os.unlink(tmp_abs)
+            except OSError:
+                pass
+            tmp_path = None
+    finally:
+        if tmp_path and os.path.isfile(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+# ---------------------------------------------------------------------------
+# Phase 9 — Lock-In Protocol (os_focus_mode), separate marker from legacy focus
+# ---------------------------------------------------------------------------
+
+# Canonical marker for rows IntentOS manages (dual-stack). Legacy Lock-In rows still recognized.
+_INTENTOS_BLOCK_MARKER = "# IntentOS-Block"
+_LEGACY_LOCKIN_MARKER = "# IntentOS-LockIn"
+_INTENTOS_HOST_MARKERS = (_INTENTOS_BLOCK_MARKER, _LEGACY_LOCKIN_MARKER)
+
+_HOSTNAME_RE = re.compile(
+    r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$",
+    re.IGNORECASE,
+)
+
+
+def _line_has_intentos_host_marker(line: str) -> bool:
+    return any(m in line for m in _INTENTOS_HOST_MARKERS)
+
+
+def _is_valid_hostname(hostname: str) -> bool:
+    h = hostname.strip().lower().rstrip(".")
+    return bool(h) and bool(_HOSTNAME_RE.fullmatch(h))
+
+
+# Activate preset: YouTube gets extra API host; all entries written as v4 + ::1 pairs.
+_LOCKIN_BLOCKLIST = [
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "youtu.be",
+    "youtubei.googleapis.com",
+    "instagram.com",
+    "www.instagram.com",
+    "reddit.com",
+    "www.reddit.com",
+    "twitter.com",
+    "www.twitter.com",
+]
+
+_LOCKIN_UNBLOCK_GROUPS = {
+    "youtube": frozenset(
+        {
+            "youtube.com",
+            "www.youtube.com",
+            "m.youtube.com",
+            "youtu.be",
+            "youtubei.googleapis.com",
+        }
+    ),
+    "instagram": frozenset({"instagram.com", "www.instagram.com"}),
+    "reddit": frozenset({"reddit.com", "www.reddit.com", "old.reddit.com"}),
+    "twitter": frozenset({"twitter.com", "www.twitter.com", "x.com", "mobile.twitter.com"}),
+}
+
+# block:<name> presets (service keyword → hostnames)
+_BLOCK_PRESET_ALIASES: dict[str, tuple[str, ...]] = {
+    "youtube": _LOCKIN_UNBLOCK_GROUPS["youtube"],
+    "instagram": _LOCKIN_UNBLOCK_GROUPS["instagram"],
+    "reddit": _LOCKIN_UNBLOCK_GROUPS["reddit"],
+    "twitter": _LOCKIN_UNBLOCK_GROUPS["twitter"],
+    "tiktok": ("tiktok.com", "www.tiktok.com"),
+    "facebook": ("facebook.com", "www.facebook.com", "m.facebook.com"),
+    "netflix": ("netflix.com", "www.netflix.com"),
+    "twitch": ("twitch.tv", "www.twitch.tv"),
+}
+
+
+def _powershell_creationflags() -> int:
+    if platform.system() == "Windows":
+        return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return 0
+
+
+def _run_powershell_lockin(command: str) -> tuple[bool, str]:
+    try:
+        cf = _powershell_creationflags()
+        kwargs: dict = {
+            "args": [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                command,
+            ],
+            "capture_output": True,
+            "text": True,
+            "timeout": 10,
+        }
+        if cf:
+            kwargs["creationflags"] = cf
+        r = subprocess.run(**kwargs)
+        ok = r.returncode == 0
+        tail = (r.stderr or r.stdout or "")[:240]
+        return ok, tail.strip()
+    except Exception as exc:
+        return False, str(exc)[:240]
+
+
+def _lockin_set_toasts_enabled(enabled: bool) -> tuple[bool, str]:
+    """
+    Best-effort toast / banner suppression across Windows 10/11 builds.
+    Uses several HKCU keys; success if at least one Set-ItemProperty succeeds.
+    """
+    val = 1 if enabled else 0
+    # Single script: create keys if missing, then set (SilentlyContinue per step).
+    ps = f"""
+$val = {val}
+$paths = @(
+  @{{ Path = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings'; Name = 'NOC_GLOBAL_SETTING_TOASTS_ENABLED' }},
+  @{{ Path = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications'; Name = 'ToastEnabled' }},
+  @{{ Path = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications'; Name = 'NOC_GLOBAL_SETTING_TOASTS_ENABLED' }}
+)
+$ok = $false
+foreach ($p in $paths) {{
+  try {{
+    if (-not (Test-Path $p.Path)) {{ New-Item -Path $p.Path -Force | Out-Null }}
+    Set-ItemProperty -LiteralPath $p.Path -Name $p.Name -Value $val -Type DWord -Force -ErrorAction Stop
+    $ok = $true
+  }} catch {{ }}
+}}
+try {{
+  $pol = 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\Explorer'
+  if (-not (Test-Path $pol)) {{ New-Item -Path $pol -Force | Out-Null }}
+  $banner = if ($val -eq 0) {{ 1 }} else {{ 0 }}
+  Set-ItemProperty -LiteralPath $pol -Name 'NoToastApplicationNotification' -Value $banner -Type DWord -Force -ErrorAction Stop
+  $ok = $true
+}} catch {{ }}
+if ($ok) {{ exit 0 }} else {{ exit 1 }}
+"""
+    ok, msg = _run_powershell_lockin(ps)
+    return ok, (msg or ("Toasts suppressed." if val == 0 else "Toasts restored."))
+
+
+def _lockin_set_volume_20_percent() -> tuple[bool, str]:
+    try:
+        from pycaw.pycaw import AudioUtilities
+
+        speakers = AudioUtilities.GetSpeakers()
+        volume = speakers.EndpointVolume
+        volume.SetMasterVolumeLevelScalar(0.20, None)
+        return True, "Volume 20%."
+    except Exception as exc:
+        return False, str(exc)[:240]
+
+
+def _lockin_parse_host_from_line(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if not _line_has_intentos_host_marker(stripped):
+        return None
+    parts = stripped.split()
+    if len(parts) >= 2 and parts[0] in ("127.0.0.1", "::1"):
+        return parts[1].lower().rstrip(".")
+    return None
+
+
+def _lockin_domains_present(lines: list[str]) -> set[str]:
+    out: set[str] = set()
+    for line in lines:
+        h = _lockin_parse_host_from_line(line)
+        if h:
+            out.add(h)
+    return out
+
+
+def _lockin_hosts_readlines() -> list[str] | None:
+    try:
+        with open(_effective_hosts_path(), "r", encoding="utf-8", errors="replace") as f:
+            return f.readlines()
+    except OSError:
+        return None
+
+
+def _lockin_flush_dns_async() -> None:
+    if platform.system() != "Windows":
+        return
+    try:
+        cf = _powershell_creationflags()
+        kwargs: dict = {
+            "args": ["ipconfig", "/flushdns"],
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if cf:
+            kwargs["creationflags"] = cf
+        subprocess.Popen(**kwargs)
+    except Exception:
+        pass
+
+
+def _lockin_append_dual_stack_blocks(
+    lines: list[str], domains: list[str]
+) -> tuple[list[str], list[str]]:
+    """Append 127.0.0.1 + ::1 rows for each domain not already blocked by IntentOS markers."""
+    present = _lockin_domains_present(lines)
+    added: list[str] = []
+    mark = _INTENTOS_BLOCK_MARKER
+    for domain in domains:
+        dl = domain.lower().strip().rstrip(".")
+        if not dl or dl in present:
+            continue
+        lines.append(f"127.0.0.1 {dl}  {mark}\n")
+        lines.append(f"::1 {dl}  {mark}\n")
+        present.add(dl)
+        added.append(dl)
+    return lines, added
+
+
+def _lockin_activate_hosts() -> tuple[bool, str]:
+    try:
+        lines = _lockin_hosts_readlines()
+        if lines is None:
+            return False, "Could not read hosts file."
+        lines, added = _lockin_append_dual_stack_blocks(lines, list(_LOCKIN_BLOCKLIST))
+        if added:
+            _lockin_hosts_write(lines)
+            _lockin_flush_dns_async()
+            print(
+                "[IntentOS] Lock-In: hosts file updated. If sites still load in Chrome/Edge, "
+                "disable Settings → Privacy and security → Use secure DNS (DNS-over-HTTPS "
+                "bypasses the system hosts file)."
+            )
+            return True, f"Hosts: added {len(added)} block(s)."
+        return True, "Hosts: blocklist already active."
+    except PermissionError:
+        try:
+            is_adm = bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            is_adm = False
+        hp = _effective_hosts_path()
+        print(
+            f"[IntentOS] Lock-In: PermissionError writing hosts (admin={is_adm}, path={hp}). "
+            "Try: clear hosts file read-only in Properties, allow Python in Windows Security → "
+            "Ransomware protection → Controlled folder access, and run uvicorn from an elevated "
+            "Command Prompt (not only an elevated GUI shell parent)."
+        )
+        return False, "Hosts not writable (need Administrator / policy exception)."
+    except OSError as exc:
+        return False, str(exc)[:200]
+
+
+def _lockin_remove_all_marker_lines() -> tuple[bool, str]:
+    try:
+        lines = _lockin_hosts_readlines()
+        if lines is None:
+            return False, "Could not read hosts file."
+        new_lines = [ln for ln in lines if not _line_has_intentos_host_marker(ln)]
+        if len(new_lines) == len(lines):
+            return True, "Hosts: no IntentOS block entries."
+        _lockin_hosts_write(new_lines)
+        _lockin_flush_dns_async()
+        return True, "Hosts: all IntentOS block rules removed."
+    except PermissionError:
+        try:
+            is_adm = bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            is_adm = False
+        print(
+            f"[IntentOS] Lock-In: PermissionError writing hosts (admin={is_adm}, "
+            f"path={_effective_hosts_path()}). See prior Lock-In log hints."
+        )
+        return False, "Hosts not writable (need Administrator / policy exception)."
+    except OSError as exc:
+        return False, str(exc)[:200]
+
+
+def _lockin_resolve_unblock_key(service: str) -> str | None:
+    s = service.strip().lower()
+    aliases = {
+        "youtube": "youtube",
+        "youtube.com": "youtube",
+        "www.youtube.com": "youtube",
+        "m.youtube.com": "youtube",
+        "youtu.be": "youtube",
+        "youtubei.googleapis.com": "youtube",
+        "instagram": "instagram",
+        "instagram.com": "instagram",
+        "www.instagram.com": "instagram",
+        "reddit": "reddit",
+        "reddit.com": "reddit",
+        "www.reddit.com": "reddit",
+        "twitter": "twitter",
+        "twitter.com": "twitter",
+        "www.twitter.com": "twitter",
+        "x.com": "twitter",
+        "tiktok": "tiktok",
+        "tiktok.com": "tiktok",
+        "www.tiktok.com": "tiktok",
+        "facebook": "facebook",
+        "facebook.com": "facebook",
+        "www.facebook.com": "facebook",
+        "m.facebook.com": "facebook",
+        "netflix": "netflix",
+        "netflix.com": "netflix",
+        "www.netflix.com": "netflix",
+        "twitch": "twitch",
+        "twitch.tv": "twitch",
+        "www.twitch.tv": "twitch",
+    }
+    key = aliases.get(s)
+    if key:
+        return key
+    return s if s in _LOCKIN_UNBLOCK_GROUPS else None
+
+
+def _lockin_remove_hosts_set(group: set[str]) -> tuple[bool, str]:
+    group_l = {g.lower().rstrip(".") for g in group if g}
+    if not group_l:
+        return True, "Nothing to remove."
+    try:
+        lines = _lockin_hosts_readlines()
+        if lines is None:
+            return False, "Could not read hosts file."
+        kept: list[str] = []
+        removed: list[str] = []
+        for ln in lines:
+            host = _lockin_parse_host_from_line(ln)
+            if host and host in group_l:
+                removed.append(host)
+                continue
+            kept.append(ln)
+        if not removed:
+            return True, "No matching IntentOS host rows to remove."
+        _lockin_hosts_write(kept)
+        _lockin_flush_dns_async()
+        return True, f"Removed {len(removed)} host row(s): {', '.join(sorted(set(removed))[:12])}."
+    except PermissionError:
+        try:
+            is_adm = bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            is_adm = False
+        print(
+            f"[IntentOS] Lock-In: PermissionError writing hosts (admin={is_adm}, "
+            f"path={_effective_hosts_path()})."
+        )
+        return False, "Hosts not writable (need Administrator / policy exception)."
+    except OSError as exc:
+        return False, str(exc)[:200]
+
+
+def _lockin_remove_group(service: str) -> tuple[bool, str]:
+    key = _lockin_resolve_unblock_key(service)
+    if key is not None:
+        if key in _LOCKIN_UNBLOCK_GROUPS:
+            group = set(_LOCKIN_UNBLOCK_GROUPS[key])
+            return _lockin_remove_hosts_set(group)
+        if key in _BLOCK_PRESET_ALIASES:
+            return _lockin_remove_hosts_set(set(_BLOCK_PRESET_ALIASES[key]))
+
+    dom = service.strip().lower().rstrip(".")
+    if _is_valid_hostname(dom):
+        hosts = {dom}
+        if not dom.startswith("www."):
+            hosts.add("www." + dom)
+        else:
+            bare = dom[4:]
+            if bare and _is_valid_hostname(bare):
+                hosts.add(bare)
+        return _lockin_remove_hosts_set(hosts)
+
+    return True, f"No unblock mapping for {service!r} (nothing changed)."
+
+
+def _lockin_resolve_block_domains(rest: str) -> tuple[str, ...] | None:
+    """Map block:… spec to hostnames (preset keyword or valid FQDN)."""
+    s = rest.strip().lower().rstrip(".")
+    if not s:
+        return None
+    if s in _BLOCK_PRESET_ALIASES:
+        return _BLOCK_PRESET_ALIASES[s]
+    ukey = _lockin_resolve_unblock_key(s)
+    if ukey and ukey in _LOCKIN_UNBLOCK_GROUPS:
+        return tuple(_LOCKIN_UNBLOCK_GROUPS[ukey])
+    if ukey and ukey in _BLOCK_PRESET_ALIASES:
+        return _BLOCK_PRESET_ALIASES[ukey]
+    if _is_valid_hostname(s):
+        return (s,)
+    return None
+
+
+def _lockin_block_from_spec(spec: str) -> tuple[bool, str]:
+    domains = _lockin_resolve_block_domains(spec)
+    if not domains:
+        return False, f"Invalid block target {spec!r} (use e.g. block:youtube or block:news.ycombinator.com)."
+    try:
+        lines = _lockin_hosts_readlines()
+        if lines is None:
+            return False, "Could not read hosts file."
+        lines, added = _lockin_append_dual_stack_blocks(lines, list(domains))
+        if not added:
+            return True, "All listed hosts already blocked."
+        _lockin_hosts_write(lines)
+        _lockin_flush_dns_async()
+        print(
+            "[IntentOS] Hosts block updated. If a site still loads, disable browser "
+            "Secure DNS (DNS-over-HTTPS) and flush DNS (already triggered)."
+        )
+        return True, f"Blocked: {', '.join(added)}."
+    except PermissionError:
+        try:
+            is_adm = bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            is_adm = False
+        print(
+            f"[IntentOS] Lock-In: PermissionError writing hosts (admin={is_adm}, "
+            f"path={_effective_hosts_path()})."
+        )
+        return False, "Hosts not writable (need Administrator / policy exception)."
+    except OSError as exc:
+        return False, str(exc)[:200]
+
+
+def _os_focus_mode(payload: str) -> dict:
+    """
+    Lock-In Protocol: activate / deactivate / block / unblock.
+
+    Payloads (case-insensitive):
+      activate | on
+      deactivate | off
+      block:youtube | block:facebook.com | block tiktok — dual-stack hosts rows
+      unblock:youtube | unblock youtube | unblock:reddit.com — remove preset or exact host rows
+    """
+    if platform.system() != "Windows":
+        return {
+            "action": "os_focus_mode",
+            "target": str(payload),
+            "status": "ok",
+            "detail": "Lock-In is Windows-only (skipped).",
+        }
+
+    raw = (payload or "").strip().lower()
+
+    if raw in ("on", "activate"):
+        bits: list[str] = []
+        ok_v, msg_v = _lockin_set_volume_20_percent()
+        bits.append(msg_v if ok_v else f"Volume failed: {msg_v}")
+
+        ok_h, msg_h = _lockin_activate_hosts()
+        bits.append(msg_h if ok_h else msg_h)
+
+        ok_t, msg_t = _lockin_set_toasts_enabled(False)
+        bits.append("Toasts off." if ok_t else f"Toasts failed: {msg_t}")
+
+        st = "ok" if ok_v and ok_t and ok_h else "partial"
+        return {
+            "action": "os_focus_mode",
+            "target": "activate",
+            "status": st,
+            "detail": " ".join(bits),
+        }
+
+    if raw in ("off", "deactivate"):
+        ok_h, msg_h = _lockin_remove_all_marker_lines()
+        ok_t, msg_t = _lockin_set_toasts_enabled(True)
+        bits = [
+            msg_h if ok_h else msg_h,
+            "Toasts on." if ok_t else f"Toasts failed: {msg_t}",
+        ]
+        st = "ok" if ok_h and ok_t else "partial"
+        return {
+            "action": "os_focus_mode",
+            "target": "deactivate",
+            "status": st,
+            "detail": " ".join(bits),
+        }
+
+    if raw.startswith("block"):
+        rest = raw[5:].lstrip(":_- ")
+        if not rest:
+            return {
+                "action": "os_focus_mode",
+                "target": payload,
+                "status": "ok",
+                "detail": "Specify a target, e.g. block:youtube or block:netflix.com",
+            }
+        ok_h, msg_h = _lockin_block_from_spec(rest)
+        return {
+            "action": "os_focus_mode",
+            "target": f"block:{rest}",
+            "status": "ok" if ok_h else "partial",
+            "detail": msg_h,
+        }
+
+    if raw.startswith("unblock"):
+        rest = raw[7:].lstrip(":_- ")
+        if not rest:
+            return {
+                "action": "os_focus_mode",
+                "target": payload,
+                "status": "ok",
+                "detail": "Specify a service, e.g. unblock:youtube or unblock:reddit.com",
+            }
+        ok_h, msg_h = _lockin_remove_group(rest)
+        return {
+            "action": "os_focus_mode",
+            "target": f"unblock:{rest}",
+            "status": "ok" if ok_h else "partial",
+            "detail": msg_h,
+        }
+
+    return {
+        "action": "os_focus_mode",
+        "target": payload,
+        "status": "error",
+        "detail": "Use activate, deactivate, block:<site>, or unblock:<site>.",
+    }
+
+
 def _focus_mode(on: bool) -> dict:
     """Toggle focus mode by editing the Windows hosts file via elevated PowerShell."""
     import tempfile
@@ -145,7 +726,7 @@ def _focus_mode(on: bool) -> dict:
 
     try:
         marker = _FOCUS_MARKER
-        hosts = _HOSTS_PATH
+        hosts = _effective_hosts_path()
         tmp = tempfile.gettempdir()
         log_path = os.path.join(tmp, "intentos_focus.log")
 
@@ -563,6 +1144,11 @@ def execute_tasks(tasks: list[dict]) -> list[dict]:
 
         if action_type == "api_weather":
             results.append(_fetch_weather())
+            continue
+
+        if action_type == "os_focus_mode":
+            pl = action_payload if isinstance(action_payload, str) else str(action_payload)
+            results.append(_os_focus_mode(pl))
             continue
 
         if action_type == "os_command":

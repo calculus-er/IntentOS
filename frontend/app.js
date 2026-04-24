@@ -29,6 +29,7 @@ const TYPE_META = {
   google_search:    { icon: "🔍", label: "Web Search" },
   api_weather:      { icon: "🌤️", label: "Weather" },
   smart_file_open:  { icon: "📄", label: "Smart File" },
+  os_focus_mode:    { icon: "🔒", label: "Hosts / Lock-In" },
   multi:            { icon: "✨", label: "Orchestration" },
 };
 

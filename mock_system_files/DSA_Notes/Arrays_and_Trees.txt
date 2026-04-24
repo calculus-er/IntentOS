@@ -1,0 +1,7 @@
+DSA Study Note - Day 1
+
+Arrays: Linear data structure, contiguous memory.
+
+Binary Trees: Each node has at most two children.
+
+To-do: Practice In-order traversal.

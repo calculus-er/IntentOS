@@ -2,20 +2,29 @@
 IntentOS backend entrypoint.
 
 Lightweight FastAPI server that receives natural-language intents from
-the frontend and (in later phases) delegates to Groq for task planning
-and to OS helpers for execution.
+the frontend, delegates to Groq for task planning, and returns a
+structured action list.
 """
 
-from fastapi import FastAPI
+import os
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from backend.ai_engine import parse_intent
+
+# ---------------------------------------------------------------------------
+# Load environment variables from .env
+# ---------------------------------------------------------------------------
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="IntentOS", version="0.1.0")
+app = FastAPI(title="IntentOS", version="0.2.0")
 
 # Allow the local frontend (served on any localhost port) to call us.
 app.add_middleware(
@@ -62,17 +71,20 @@ async def health_check():
 @app.post("/api/intent", response_model=IntentResponse)
 async def process_intent(payload: IntentRequest):
     """
-    Receive a natural-language intent string, break it into tasks, and
-    return the task list.  Groq integration is wired in Phase 3; for now
-    we return a hard-coded stub so the endpoint contract is testable.
+    Receive a natural-language intent string, send it to Groq for
+    task decomposition, and return the resulting action list.
     """
-    stub_tasks = [
-        TaskAction(action="open_folder", target="C:/Users/rishu/Desktop/DSA_Notes"),
-        TaskAction(action="open_url", target="https://visualgo.net"),
-    ]
+    try:
+        raw_tasks = parse_intent(payload.intent)
+    except EnvironmentError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    tasks = [TaskAction(**t) for t in raw_tasks]
 
     return IntentResponse(
         intent=payload.intent,
-        tasks=stub_tasks,
-        message=f"Planned {len(stub_tasks)} action(s) for: {payload.intent}",
+        tasks=tasks,
+        message=f"Planned {len(tasks)} action(s) for: {payload.intent}",
     )

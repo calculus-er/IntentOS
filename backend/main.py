@@ -133,6 +133,10 @@ async def process_intent(payload: IntentRequest):
         if results:
             exec_status = results[0].get("status", "error")
             exec_detail = results[0].get("detail")
+            # If the executor provides dynamic speech (like live weather), override
+            dynamic_speech = results[0].get("dynamic_speech")
+            if dynamic_speech:
+                spoken_response = dynamic_speech
 
     # --- Step 3: Save to memory ---
     save_interaction(payload.intent, action_type, action_payload, spoken_response)

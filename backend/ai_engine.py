@@ -2,8 +2,8 @@
 AI Engine -- Phase 7B: The Brain & Universal JSON Router
 
 Edith persona.  Every response is a JSON object with three keys:
-  action_type   :  "os_command" | "browser_action" | "conversation" | "youtube_play" | "google_search"
-  action_payload:  the command / URL / answer text / video request / search query
+  action_type   :  "os_command" | "browser_action" | "conversation" | "youtube_play" | "google_search" | "weather_check"
+  action_payload:  the command / URL / answer text / video request / search query / weather query
   spoken_response: what Edith says aloud (JARVIS persona)
 """
 
@@ -55,7 +55,7 @@ YOUR TASK:
 Given the user's natural-language intent, return a SINGLE JSON object with exactly three keys:
 
 {{
-  "action_type": "os_command" | "browser_action" | "conversation" | "youtube_play" | "google_search",
+  "action_type": "os_command" | "browser_action" | "conversation" | "youtube_play" | "google_search" | "weather_check",
   "action_payload": "<the payload>",
   "spoken_response": "<what you say aloud>"
 }}
@@ -85,10 +85,21 @@ TYPE B - "browser_action":
 TYPE E - "google_search":
   Use when the user wants to search or look something up on the internet.
   This includes: "search X", "google X", "look up X", "how to X", "what is X",
-  "explain X", "find info on X", weather queries, news queries, technical questions.
+  "explain X", "find info on X", news queries, technical questions.
+  Do NOT use this for weather queries -- use TYPE F instead.
+  Do NOT use this for YouTube video requests -- use TYPE D instead.
   action_payload = the raw search query (natural language, verbatim from the user).
   Do NOT construct a URL yourself -- the search classifier will decide deep vs basic.
   spoken_response = brief confirmation, e.g. "Searching that up for you, sir."
+
+TYPE F - "weather_check":
+  Use when the user asks about weather, temperature, forecast, rain, humidity, or climate
+  for any city or their current location.
+  This includes: "weather in X", "what's the weather", "will it rain", "temperature in X",
+  "how's the weather", "forecast for X".
+  action_payload = the original weather query verbatim from the user.
+  Do NOT construct a URL yourself -- the weather handler will extract the city.
+  spoken_response = brief formal confirmation, e.g. "Checking the weather for you, sir."
 
 TYPE D - "youtube_play":
   Use when the user wants to play or open a specific YouTube video, channel, or creator's content.
@@ -122,7 +133,13 @@ User: "Turn on focus mode"
 {{"action_type": "os_command", "action_payload": "focus_mode:on", "spoken_response": "Focus mode activated. Distractions blocked. Time to lock in, Rishit."}}
 
 User: "What's the weather in Bangalore?"
-{{"action_type": "google_search", "action_payload": "weather in Bangalore today", "spoken_response": "Pulling up the Bangalore forecast for you, sir."}}
+{{"action_type": "weather_check", "action_payload": "what's the weather in Bangalore", "spoken_response": "Pulling up current weather conditions for Bangalore, sir."}}
+
+User: "Will it rain today in Mumbai?"
+{{"action_type": "weather_check", "action_payload": "will it rain today in Mumbai", "spoken_response": "Checking the Mumbai forecast for precipitation, sir."}}
+
+User: "Tell me the weather"
+{{"action_type": "weather_check", "action_payload": "tell me the weather", "spoken_response": "Fetching current weather conditions for your location, sir."}}
 
 User: "What is the derivative of x squared?"
 {{"action_type": "conversation", "action_payload": "The derivative of x^2 is 2x, by the power rule.", "spoken_response": "The derivative of x squared is 2x. A trivial question, Rishit, but I am happy to help."}}
@@ -215,7 +232,7 @@ def parse_intent(intent: str) -> dict:
     action_payload = result.get("action_payload", "")
     spoken_response = result.get("spoken_response", "")
 
-    if action_type not in ("os_command", "browser_action", "conversation", "youtube_play", "google_search"):
+    if action_type not in ("os_command", "browser_action", "conversation", "youtube_play", "google_search", "weather_check"):
         raise ValueError(f"Unknown action_type: {action_type}")
 
     if not action_payload:

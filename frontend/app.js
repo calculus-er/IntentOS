@@ -27,6 +27,7 @@ const TYPE_META = {
   conversation:    { icon: "💬", label: "Conversation" },
   youtube_play:    { icon: "🎥", label: "Now Playing" },
   google_search:   { icon: "🔍", label: "Web Search" },
+  weather_check:   { icon: "🌤️", label: "Weather" },
 };
 
 // ---- Render helpers ----

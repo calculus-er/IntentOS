@@ -255,6 +255,91 @@ def _search_google(query: str) -> dict:
         }
 
 
+def _check_weather(query: str) -> dict:
+    """Open browser immediately, fetch accurate weather via Open-Meteo, speak within 2s."""
+    import urllib.request
+    import urllib.parse
+    import json as _json
+    import threading
+
+    try:
+        from backend.weather_handler import handle_weather
+        resolved = handle_weather(query)
+
+        if resolved.get("action_type") == "not_weather":
+            fallback_url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
+            threading.Thread(target=webbrowser.open, args=(fallback_url,), daemon=True).start()
+            return {"action": "weather_check", "target": fallback_url, "status": "ok", "detail": "Routed to Google search."}
+
+        city = resolved.get("city") or ""
+        url = resolved.get("google_weather_url", "https://www.google.com/search?q=weather+near+me")
+
+        # ── Step 1: Open browser immediately ──
+        threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
+
+        # ── Step 2: Resolve highly accurate location ──
+        display_city = city
+        if not city:
+            # IP-based location (extremely accurate for Indian cities like BLR)
+            try:
+                req = urllib.request.Request("http://ip-api.com/json/", headers={"User-Agent": "curl"})
+                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                    data = _json.loads(resp.read().decode())
+                    display_city = data.get("city", "your location")
+            except Exception:
+                display_city = "your location"
+
+        # ── Step 3: Fetch exact weather via Open-Meteo ──
+        spoken = f"Weather for {display_city} is on screen, sir."
+        try:
+            search_city = city if city else display_city
+            if search_city and search_city != "your location":
+                # Geocode
+                geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote_plus(search_city)}&count=1&format=json"
+                req = urllib.request.Request(geo_url, headers={"User-Agent": "curl"})
+                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                    geo_data = _json.loads(resp.read().decode())
+                    if geo_data.get("results"):
+                        lat = geo_data["results"][0]["latitude"]
+                        lon = geo_data["results"][0]["longitude"]
+                        display_city = geo_data["results"][0]["name"]  # Updates "blr" to "Bengaluru"
+
+                        # Fetch weather
+                        w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code"
+                        w_req = urllib.request.Request(w_url, headers={"User-Agent": "curl"})
+                        with urllib.request.urlopen(w_req, timeout=1.5) as w_resp:
+                            w_data = _json.loads(w_resp.read().decode())
+                            temp = round(w_data["current"]["temperature_2m"])
+                            code = w_data["current"]["weather_code"]
+
+                            wmo_map = {
+                                0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+                                45: "Fog", 48: "Rime fog", 51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle",
+                                61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain", 71: "Slight snow", 75: "Heavy snow",
+                                80: "Slight rain showers", 81: "Moderate rain showers", 82: "Violent rain showers",
+                                95: "Thunderstorm"
+                            }
+                            condition = wmo_map.get(code, "Clear")
+                            spoken = f"{condition}, {temp} degrees in {display_city}, sir."
+        except Exception as e:
+            print(f"[WeatherHandler] Open-Meteo fetch failed: {e}")
+
+        return {
+            "action": "weather_check",
+            "target": url,
+            "status": "ok",
+            "detail": f"Weather for {display_city} opened.",
+            "dynamic_speech": spoken,
+        }
+
+    except Exception as exc:
+        return {
+            "action": "weather_check",
+            "target": query,
+            "status": "error",
+            "detail": str(exc),
+        }
+
 # ---------------------------------------------------------------------------
 # Legacy dispatcher
 # ---------------------------------------------------------------------------
@@ -296,6 +381,10 @@ def execute_tasks(tasks: list[dict]) -> list[dict]:
 
         if action_type == "google_search":
             results.append(_search_google(action_payload))
+            continue
+
+        if action_type == "weather_check":
+            results.append(_check_weather(action_payload))
             continue
 
         if action_type == "os_command":

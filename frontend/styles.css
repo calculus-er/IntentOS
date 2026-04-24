@@ -1,0 +1,18 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #0b0d10;
+  color: #f5f7fa;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  gap: 0.5rem;
+  text-align: center;
+}

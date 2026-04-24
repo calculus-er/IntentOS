@@ -22,12 +22,14 @@ const crossSVG = `<svg class="task-icon err" viewBox="0 0 24 24" fill="none" str
 
 // Action type icons and labels
 const TYPE_META = {
-  os_command:      { icon: "⚡", label: "System Command" },
-  browser_action:  { icon: "🌐", label: "Browser Action" },
-  conversation:    { icon: "💬", label: "Conversation" },
-  youtube_play:    { icon: "🎥", label: "Now Playing" },
-  google_search:   { icon: "🔍", label: "Web Search" },
-  api_weather:     { icon: "🌤️", label: "Weather" },
+  os_command:       { icon: "⚡", label: "System Command" },
+  browser_action:   { icon: "🌐", label: "Browser Action" },
+  conversation:     { icon: "💬", label: "Conversation" },
+  youtube_play:     { icon: "🎥", label: "Now Playing" },
+  google_search:    { icon: "🔍", label: "Web Search" },
+  api_weather:      { icon: "🌤️", label: "Weather" },
+  smart_file_open:  { icon: "📄", label: "Smart File" },
+  multi:            { icon: "✨", label: "Orchestration" },
 };
 
 // ---- Render helpers ----
@@ -42,11 +44,8 @@ function showLoading() {
 }
 
 function showResults(data) {
-  const meta = TYPE_META[data.action_type] || { icon: "🔧", label: data.action_type };
-  const statusIcon = data.execution_status === "ok" ? checkSVG : crossSVG;
-  const statusClass = data.execution_status === "ok" ? "ok" : "err";
-
-  // Build the spoken response bubble
+  const overallOk = data.execution_status === "ok";
+  const overallPartial = data.execution_status === "partial";
   const spokenHTML = data.spoken_response
     ? `<div class="edith-bubble">
          <span class="edith-avatar">E</span>
@@ -54,36 +53,62 @@ function showResults(data) {
        </div>`
     : "";
 
-  // Build the action detail
-  let actionDetail = "";
-  if (data.action_type !== "conversation") {
-    actionDetail = `
-      <div class="task-item">
-        ${statusIcon}
-        <span>
-          <span class="task-action">${meta.icon} ${meta.label}</span>
-          <span class="task-target">${escapeHTML(data.action_payload)}</span>
-        </span>
-      </div>`;
+  let actionBlocks = "";
+
+  if (Array.isArray(data.actions) && data.actions.length > 0) {
+    actionBlocks = data.actions
+      .map((row) => {
+        const meta = TYPE_META[row.action_type] || { icon: "🔧", label: row.action_type };
+        const rowOk = row.execution_status === "ok";
+        const icon = rowOk ? checkSVG : crossSVG;
+        const isConv = row.action_type === "conversation";
+        const cls = isConv ? "task-item conversation-item" : "task-item";
+        const detail = row.execution_detail
+          ? `<p class="exec-detail sub">${escapeHTML(row.execution_detail)}</p>`
+          : "";
+        return `<li class="${cls}">
+          ${icon}
+          <span class="task-body">
+            <span class="task-action">${meta.icon} ${meta.label}</span>
+            <span class="task-target">${escapeHTML(row.action_payload)}</span>
+            ${detail}
+          </span>
+        </li>`;
+      })
+      .join("");
   } else {
-    actionDetail = `
-      <div class="task-item conversation-item">
+    const meta = TYPE_META[data.action_type] || { icon: "🔧", label: data.action_type };
+    const statusIcon = overallOk ? checkSVG : crossSVG;
+    if (data.action_type !== "conversation") {
+      actionBlocks = `<li class="task-item">
         ${statusIcon}
-        <span>
+        <span class="task-body">
           <span class="task-action">${meta.icon} ${meta.label}</span>
           <span class="task-target">${escapeHTML(data.action_payload)}</span>
         </span>
-      </div>`;
+      </li>`;
+    } else {
+      actionBlocks = `<li class="task-item conversation-item">
+        ${statusIcon}
+        <span class="task-body">
+          <span class="task-action">${meta.icon} ${meta.label}</span>
+          <span class="task-target">${escapeHTML(data.action_payload)}</span>
+        </span>
+      </li>`;
+    }
   }
+
+  const cardClass =
+    overallOk || overallPartial ? "status-card is-success" : "status-card is-success warn";
 
   const detailNote = data.execution_detail
     ? `<p class="exec-detail">${escapeHTML(data.execution_detail)}</p>`
     : "";
 
   results.innerHTML = `
-    <div class="status-card is-success">
+    <div class="${cardClass}">
       ${spokenHTML}
-      <ul class="task-list">${actionDetail}</ul>
+      <ul class="task-list">${actionBlocks}</ul>
       ${detailNote}
     </div>`;
 

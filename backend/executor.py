@@ -1,12 +1,14 @@
 """
-OS Execution Engine for IntentOS — Phase 7C
+OS Execution Engine for IntentOS — Phase 7C + Phase 8
 
 Real native handlers for volume (pycaw), brightness (screen-brightness-control),
-lock workstation (ctypes), focus mode (hosts file), and PowerShell fallback
-with -ExecutionPolicy Bypass.
+lock workstation (ctypes), focus mode (hosts file), PowerShell fallback,
+and smart_file_open (fuzzy file match + default app).
 """
 
 import ctypes
+import difflib
+import json
 import os
 import platform
 import subprocess
@@ -317,6 +319,132 @@ def _search_google(query: str) -> dict:
         }
 
 
+def _smart_file_open(payload) -> dict:
+    """
+    Fuzzy-pick the best file in folder_path matching search_keyword; open with
+    the OS default application. Failures are non-fatal (status ok, short detail).
+    """
+    try:
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                return {
+                    "action": "smart_file_open",
+                    "target": "",
+                    "status": "ok",
+                    "detail": "Invalid smart_file_open payload (skipped).",
+                }
+
+        if not isinstance(payload, dict):
+            return {
+                "action": "smart_file_open",
+                "target": "",
+                "status": "ok",
+                "detail": "Invalid payload type (skipped).",
+            }
+
+        folder_path = os.path.normpath(str(payload.get("folder_path", "")).strip())
+        keyword = str(payload.get("search_keyword", "")).strip()
+
+        if not folder_path or not keyword:
+            return {
+                "action": "smart_file_open",
+                "target": folder_path or "(no path)",
+                "status": "ok",
+                "detail": "Missing folder_path or search_keyword (skipped).",
+            }
+
+        if not os.path.isdir(folder_path):
+            return {
+                "action": "smart_file_open",
+                "target": folder_path,
+                "status": "ok",
+                "detail": "Folder not found (skipped).",
+            }
+
+        try:
+            filenames = [
+                f
+                for f in os.listdir(folder_path)
+                if os.path.isfile(os.path.join(folder_path, f))
+            ]
+        except OSError:
+            return {
+                "action": "smart_file_open",
+                "target": folder_path,
+                "status": "ok",
+                "detail": "Could not read folder (skipped).",
+            }
+
+        if not filenames:
+            return {
+                "action": "smart_file_open",
+                "target": folder_path,
+                "status": "ok",
+                "detail": "No files in folder (skipped).",
+            }
+
+        stems = [os.path.splitext(f)[0] for f in filenames]
+        best = None
+        close = difflib.get_close_matches(keyword, filenames, n=1, cutoff=0.28)
+        if close:
+            best = close[0]
+        else:
+            stem_matches = difflib.get_close_matches(keyword, stems, n=1, cutoff=0.32)
+            if stem_matches:
+                stem_hit = stem_matches[0]
+                best = next(
+                    (f for f in filenames if os.path.splitext(f)[0] == stem_hit),
+                    None,
+                )
+
+        if best is None:
+            kw_l = keyword.lower()
+            best_ratio = 0.0
+            best_name = None
+            for f in filenames:
+                stem = os.path.splitext(f)[0].replace("_", " ")
+                ratio = max(
+                    difflib.SequenceMatcher(None, kw_l, f.lower()).ratio(),
+                    difflib.SequenceMatcher(None, kw_l, stem.lower()).ratio(),
+                )
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_name = f
+            if best_name is None or best_ratio < 0.28:
+                return {
+                    "action": "smart_file_open",
+                    "target": folder_path,
+                    "status": "ok",
+                    "detail": "No matching file (skipped).",
+                }
+            best = best_name
+
+        filepath = os.path.join(folder_path, best)
+        system = platform.system()
+        if system == "Windows":
+            os.startfile(filepath)  # noqa: S606
+        elif system == "Darwin":
+            subprocess.Popen(["open", filepath])
+        else:
+            subprocess.Popen(["xdg-open", filepath])
+
+        return {
+            "action": "smart_file_open",
+            "target": filepath,
+            "status": "ok",
+            "detail": f"Opened: {best}",
+        }
+    except Exception:
+        return {
+            "action": "smart_file_open",
+            "target": "",
+            "status": "ok",
+            "detail": "smart_file_open failed (skipped).",
+        }
+
+
 def _fetch_weather() -> dict:
     """
     Phase 8 — Smart Weather Integration.
@@ -407,6 +535,22 @@ def execute_tasks(tasks: list[dict]) -> list[dict]:
         # ---- Phase 7B router format ----
         if action_type == "browser_action":
             results.append(_open_url(action_payload))
+            continue
+
+        if action_type == "smart_file_open":
+            results.append(_smart_file_open(action_payload))
+            continue
+
+        if action_type == "conversation":
+            text = action_payload if isinstance(action_payload, str) else str(action_payload)
+            results.append(
+                {
+                    "action": "conversation",
+                    "target": text[:500],
+                    "status": "ok",
+                    "detail": "No OS action required.",
+                }
+            )
             continue
 
         if action_type == "youtube_play":

@@ -25,6 +25,7 @@ const TYPE_META = {
   os_command:      { icon: "⚡", label: "System Command" },
   browser_action:  { icon: "🌐", label: "Browser Action" },
   conversation:    { icon: "💬", label: "Conversation" },
+  youtube_play:    { icon: "🎥", label: "Now Playing" },
 };
 
 // ---- Render helpers ----

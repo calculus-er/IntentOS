@@ -189,6 +189,46 @@ def _run_powershell(command: str) -> dict:
                 "status": "error", "detail": str(exc)}
 
 
+def _play_youtube(request: str) -> dict:
+    """Resolve a natural-language video request and open the exact YouTube URL."""
+    try:
+        from backend.youtube_resolver import resolve_video
+        resolved = resolve_video(request)
+        video_url = resolved.get("video_url")
+        title = resolved.get("title") or "Unknown"
+        channel = resolved.get("channel") or "Unknown"
+
+        if video_url:
+            webbrowser.open(video_url)
+            return {
+                "action": "youtube_play",
+                "target": video_url,
+                "status": "ok",
+                "detail": f"Now playing: \"{title}\" by {channel}",
+            }
+        else:
+            # Fallback: open YouTube search
+            import urllib.parse
+            search_url = (
+                "https://www.youtube.com/results?search_query="
+                + urllib.parse.quote_plus(request)
+            )
+            webbrowser.open(search_url)
+            return {
+                "action": "youtube_play",
+                "target": search_url,
+                "status": "ok",
+                "detail": f"Exact video not found — opened YouTube search for: {request}",
+            }
+    except Exception as exc:
+        return {
+            "action": "youtube_play",
+            "target": request,
+            "status": "error",
+            "detail": str(exc),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Legacy dispatcher
 # ---------------------------------------------------------------------------
@@ -222,6 +262,10 @@ def execute_tasks(tasks: list[dict]) -> list[dict]:
         # ---- Phase 7B router format ----
         if action_type == "browser_action":
             results.append(_open_url(action_payload))
+            continue
+
+        if action_type == "youtube_play":
+            results.append(_play_youtube(action_payload))
             continue
 
         if action_type == "os_command":

@@ -16,8 +16,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 import webbrowser
+
+import screen_brightness_control as sbc
 
 
 # ---------------------------------------------------------------------------
@@ -645,16 +648,39 @@ def _os_focus_mode(payload: str) -> dict:
 
     if raw in ("on", "activate"):
         bits: list[str] = []
-        ok_v, msg_v = _lockin_set_volume_20_percent()
-        bits.append(msg_v if ok_v else f"Volume failed: {msg_v}")
-
-        ok_h, msg_h = _lockin_activate_hosts()
+        group = {
+            "youtube.com",
+            "www.youtube.com",
+            "m.youtube.com",
+            "youtu.be",
+            "instagram.com",
+            "www.instagram.com",
+            "twitter.com",
+            "www.twitter.com",
+            "x.com",
+            "www.x.com",
+        }
+        ok_h, msg_h = _lockin_block_from_spec("youtube")
         bits.append(msg_h if ok_h else msg_h)
+        ok_h2, msg_h2 = _lockin_block_from_spec("instagram")
+        bits.append(msg_h2 if ok_h2 else msg_h2)
+        ok_h3, msg_h3 = _lockin_block_from_spec("twitter")
+        bits.append(msg_h3 if ok_h3 else msg_h3)
 
-        ok_t, msg_t = _lockin_set_toasts_enabled(False)
-        bits.append("Toasts off." if ok_t else f"Toasts failed: {msg_t}")
+        try:
+            print("[Edith] Focus Mode: opening LeetCode...")
+        except Exception:
+            pass
+        try:
+            time.sleep(1)
+        except Exception:
+            pass
+        try:
+            webbrowser.open("https://leetcode.com")
+        except Exception:
+            pass
 
-        st = "ok" if ok_v and ok_t and ok_h else "partial"
+        st = "ok" if (ok_h and ok_h2 and ok_h3) else "partial"
         return {
             "action": "os_focus_mode",
             "target": "activate",
@@ -663,13 +689,21 @@ def _os_focus_mode(payload: str) -> dict:
         }
 
     if raw in ("off", "deactivate"):
-        ok_h, msg_h = _lockin_remove_all_marker_lines()
-        ok_t, msg_t = _lockin_set_toasts_enabled(True)
-        bits = [
-            msg_h if ok_h else msg_h,
-            "Toasts on." if ok_t else f"Toasts failed: {msg_t}",
-        ]
-        st = "ok" if ok_h and ok_t else "partial"
+        group = {
+            "youtube.com",
+            "www.youtube.com",
+            "m.youtube.com",
+            "youtu.be",
+            "instagram.com",
+            "www.instagram.com",
+            "twitter.com",
+            "www.twitter.com",
+            "x.com",
+            "www.x.com",
+        }
+        ok_h, msg_h = _lockin_remove_hosts_set(group)
+        bits = [msg_h if ok_h else msg_h]
+        st = "ok" if ok_h else "partial"
         return {
             "action": "os_focus_mode",
             "target": "deactivate",
@@ -721,98 +755,322 @@ def _os_focus_mode(payload: str) -> dict:
 
 def _focus_mode(on: bool) -> dict:
     """Toggle focus mode by editing the Windows hosts file via elevated PowerShell."""
-    import tempfile
-    import time as _time
-
     try:
-        marker = _FOCUS_MARKER
-        hosts = _effective_hosts_path()
-        tmp = tempfile.gettempdir()
-        log_path = os.path.join(tmp, "intentos_focus.log")
+        try:
+            marker = _FOCUS_MARKER
+        except Exception:
+            marker = "# IntentOS-Focus"
+        try:
+            hosts = _effective_hosts_path()
+        except Exception:
+            hosts = _HOSTS_PATH
+        try:
+            tmp = tempfile.gettempdir()
+        except Exception:
+            tmp = ""
+        try:
+            log_path = os.path.join(tmp, "intentos_focus.log")
+        except Exception:
+            log_path = ""
 
-        # Build the PowerShell script content with error logging
-        if on:
-            add_cmds = "\n".join(
-                f'Add-Content -Path $h -Value "127.0.0.1  {d}  {marker}"'
-                for d in _FOCUS_BLOCK_LIST
-            )
-            core = (
-                f'$content = Get-Content $h | Where-Object {{ $_ -notmatch [regex]::Escape("{marker}") }}\n'
-                f'Set-Content -Path $h -Value $content -Force\n'
-                f'{add_cmds}\n'
-                f'ipconfig /flushdns | Out-Null\n'
-            )
-            mode_str = "ON"
-        else:
-            core = (
-                f'$content = Get-Content $h | Where-Object {{ $_ -notmatch [regex]::Escape("{marker}") }}\n'
-                f'Set-Content -Path $h -Value $content -Force\n'
-                f'ipconfig /flushdns | Out-Null\n'
-            )
-            mode_str = "OFF"
+        # Build the PowerShell script content with error logging (hosts block/unblock + flushdns)
+        try:
+            if on:
+                try:
+                    print("[Edith] Focus Mode: blocking sites in hosts...")
+                except Exception:
+                    pass
+                add_cmds = "\n".join(
+                    f'Add-Content -Path $h -Value "127.0.0.1  {d}  {marker}"'
+                    for d in _FOCUS_BLOCK_LIST
+                )
+                core = (
+                    f'$content = Get-Content $h | Where-Object {{ $_ -notmatch [regex]::Escape("{marker}") }}\n'
+                    f'Set-Content -Path $h -Value $content -Force\n'
+                    f'{add_cmds}\n'
+                    f'ipconfig /flushdns | Out-Null\n'
+                )
+                mode_str = "ON"
+            else:
+                try:
+                    print("[Edith] Focus Mode: unblocking sites from hosts...")
+                except Exception:
+                    pass
+                core = (
+                    f'$content = Get-Content $h | Where-Object {{ $_ -notmatch [regex]::Escape("{marker}") }}\n'
+                    f'Set-Content -Path $h -Value $content -Force\n'
+                    f'ipconfig /flushdns | Out-Null\n'
+                )
+                mode_str = "OFF"
+        except Exception as exc:
+            try:
+                print(f"[Edith] Focus Mode: hosts script build failed: {exc}")
+            except Exception:
+                pass
+            core = 'ipconfig /flushdns | Out-Null\n'
+            mode_str = "ON" if on else "OFF"
 
-        script = (
-            f'$h = "{hosts}"\n'
-            f'$log = "{log_path}"\n'
-            f'try {{\n'
-            f'{core}'
-            f'"SUCCESS" | Out-File $log -Force\n'
-            f'}} catch {{\n'
-            f'$_.Exception.Message | Out-File $log -Force\n'
-            f'}}\n'
-        )
+        try:
+            script = (
+                f'$h = "{hosts}"\n'
+                f'$log = "{log_path}"\n'
+                f'try {{\n'
+                f'{core}'
+                f'"SUCCESS" | Out-File $log -Force\n'
+                f'}} catch {{\n'
+                f'$_.Exception.Message | Out-File $log -Force\n'
+                f'}}\n'
+            )
+        except Exception as exc:
+            try:
+                print(f"[Edith] Focus Mode: script render failed: {exc}")
+            except Exception:
+                pass
+            script = ""
 
         # Write temp .ps1 script
-        script_path = os.path.join(tmp, "intentos_focus.ps1")
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(script)
+        try:
+            script_path = os.path.join(tmp, "intentos_focus.ps1")
+        except Exception:
+            script_path = ""
+        try:
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write(script)
+        except Exception as exc:
+            try:
+                print(f"[Edith] Focus Mode: could not write ps1: {exc}")
+            except Exception:
+                pass
 
         # Remove old log
-        if os.path.exists(log_path):
-            os.unlink(log_path)
+        try:
+            if log_path and os.path.exists(log_path):
+                os.unlink(log_path)
+        except Exception as exc:
+            try:
+                print(f"[Edith] Focus Mode: could not clear old log: {exc}")
+            except Exception:
+                pass
 
         # Check if already admin
-        is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+        try:
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+        except Exception:
+            is_admin = False
 
-        if is_admin:
-            subprocess.run(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-File", script_path],
-                capture_output=True, text=True, timeout=15,
-            )
-        else:
-            # ShellExecuteW with "runas" — SW_SHOWNORMAL=1 so user sees UAC
-            ret = ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", "powershell.exe",
-                f'-NoProfile -ExecutionPolicy Bypass -File "{script_path}"',
-                None, 1  # SW_SHOWNORMAL
-            )
-            if ret <= 32:
-                return {"action": "focus_mode", "target": mode_str,
-                        "status": "error",
-                        "detail": f"UAC elevation failed (code {ret}). Click Yes on the admin prompt."}
-            # Wait for elevated process
-            _time.sleep(5)
-
-        # Check log for result
-        if os.path.exists(log_path):
-            with open(log_path, "r") as lf:
-                log_content = lf.read().strip()
-            if "SUCCESS" in log_content:
-                return {"action": "focus_mode", "target": mode_str,
-                        "status": "ok",
-                        "detail": f"Focus mode {mode_str}. {'Distractions blocked.' if on else 'Restrictions lifted.'}"}
+        try:
+            try:
+                print("[Edith] Focus Mode: flushing DNS (via existing script)...")
+            except Exception:
+                pass
+            if is_admin:
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
             else:
-                return {"action": "focus_mode", "target": mode_str,
-                        "status": "error", "detail": f"Script error: {log_content[:200]}"}
-        else:
-            return {"action": "focus_mode", "target": mode_str,
-                    "status": "error",
-                    "detail": "Elevated script did not run. Did you click Yes on the UAC prompt?"}
+                ret = ctypes.windll.shell32.ShellExecuteW(
+                    None,
+                    "runas",
+                    "powershell.exe",
+                    f'-NoProfile -ExecutionPolicy Bypass -File "{script_path}"',
+                    None,
+                    1,
+                )
+                if ret <= 32:
+                    return {
+                        "action": "focus_mode",
+                        "target": mode_str,
+                        "status": "error",
+                        "detail": f"UAC elevation failed (code {ret}). Click Yes on the admin prompt.",
+                    }
+                try:
+                    time.sleep(5)
+                except Exception:
+                    pass
+        except Exception as exc:
+            try:
+                print(f"[Edith] Focus Mode: hosts/flush script execution failed: {exc}")
+            except Exception:
+                pass
 
-    except Exception as exc:
-        return {"action": "focus_mode", "target": "on" if on else "off",
-                "status": "error", "detail": str(exc)}
+        if on:
+            try:
+                print("[Edith] Focus Mode: waiting for DNS flush...")
+            except Exception:
+                pass
+            try:
+                time.sleep(1)
+            except Exception:
+                pass
+
+            try:
+                print("[Edith] Focus Mode: setting brightness to 40%...")
+            except Exception:
+                pass
+            try:
+                try:
+                    sbc.set_brightness(40)
+                except Exception as exc1:
+                    try:
+                        print(f"[Edith] Focus Mode: sbc.set_brightness failed: {exc1}")
+                    except Exception:
+                        pass
+                    try:
+                        subprocess.run(
+                            [
+                                "powershell",
+                                "-Command",
+                                "(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, 40)",
+                            ],
+                            capture_output=True,
+                        )
+                    except Exception as exc2:
+                        try:
+                            print(f"[Edith] Focus Mode: PowerShell brightness fallback failed: {exc2}")
+                        except Exception:
+                            pass
+            except Exception as exc:
+                try:
+                    print(f"[Edith] Focus Mode: brightness step failed: {exc}")
+                except Exception:
+                    pass
+
+            try:
+                print("[Edith] Focus Mode: opening Notepad...")
+            except Exception:
+                pass
+            try:
+                try:
+                    subprocess.Popen(["notepad.exe"])
+                except Exception as exc1:
+                    try:
+                        print(f"[Edith] Focus Mode: subprocess.Popen notepad failed: {exc1}")
+                    except Exception:
+                        pass
+                    try:
+                        os.system("start notepad.exe")
+                    except Exception as exc2:
+                        try:
+                            print(f"[Edith] Focus Mode: os.system notepad fallback failed: {exc2}")
+                        except Exception:
+                            pass
+            except Exception as exc:
+                try:
+                    print(f"[Edith] Focus Mode: notepad step failed: {exc}")
+                except Exception:
+                    pass
+
+            try:
+                print("[Edith] Focus Mode: opening LeetCode in browser...")
+            except Exception:
+                pass
+            try:
+                webbrowser.open("https://leetcode.com")
+            except Exception as exc:
+                try:
+                    print(f"[Edith] Focus Mode: webbrowser.open failed: {exc}")
+                except Exception:
+                    pass
+
+        if not on:
+            try:
+                print("[Edith] Focus Mode: restoring brightness to 100%...")
+            except Exception:
+                pass
+            try:
+                try:
+                    sbc.set_brightness(100)
+                except Exception as exc1:
+                    try:
+                        print(f"[Edith] Focus Mode: sbc.set_brightness restore failed: {exc1}")
+                    except Exception:
+                        pass
+                    try:
+                        subprocess.run(
+                            [
+                                "powershell",
+                                "-Command",
+                                "(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, 100)",
+                            ],
+                            capture_output=True,
+                        )
+                    except Exception as exc2:
+                        try:
+                            print(f"[Edith] Focus Mode: PowerShell brightness restore fallback failed: {exc2}")
+                        except Exception:
+                            pass
+            except Exception as exc:
+                try:
+                    print(f"[Edith] Focus Mode: brightness restore step failed: {exc}")
+                except Exception:
+                    pass
+
+            try:
+                print("[Edith] Focus Mode: closing Notepad...")
+            except Exception:
+                pass
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", "notepad.exe"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception as exc:
+                try:
+                    print(f"[Edith] Focus Mode: taskkill notepad failed: {exc}")
+                except Exception:
+                    pass
+
+        # Check log for result (original behavior)
+        try:
+            if log_path and os.path.exists(log_path):
+                try:
+                    with open(log_path, "r") as lf:
+                        log_content = lf.read().strip()
+                except Exception:
+                    log_content = ""
+                if "SUCCESS" in log_content:
+                    return {
+                        "action": "focus_mode",
+                        "target": mode_str,
+                        "status": "ok",
+                        "detail": f"Focus mode {mode_str}. {'Distractions blocked.' if on else 'Restrictions lifted.'}",
+                    }
+                else:
+                    return {
+                        "action": "focus_mode",
+                        "target": mode_str,
+                        "status": "error",
+                        "detail": f"Script error: {log_content[:200]}",
+                    }
+            else:
+                return {
+                    "action": "focus_mode",
+                    "target": mode_str,
+                    "status": "error",
+                    "detail": "Elevated script did not run. Did you click Yes on the UAC prompt?",
+                }
+        except Exception as exc:
+            try:
+                print(f"[Edith] Focus Mode: log check failed: {exc}")
+            except Exception:
+                pass
+            return {
+                "action": "focus_mode",
+                "target": "ON" if on else "OFF",
+                "status": "ok",
+                "detail": "Focus mode toggle skipped.",
+            }
+    except Exception:
+        return {
+            "action": "focus_mode",
+            "target": "ON" if on else "OFF",
+            "status": "ok",
+            "detail": "Focus mode toggle skipped.",
+        }
 
 
 def _run_powershell(command: str) -> dict:

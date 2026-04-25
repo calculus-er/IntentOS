@@ -13,3 +13,5 @@ comtypes
 screen-brightness-control
 kokoro-onnx
 soundfile
+openwakeword
+pyaudio

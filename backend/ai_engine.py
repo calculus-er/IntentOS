@@ -9,10 +9,14 @@ action_payload is a string for most types; for smart_file_open it must be an
 object: { "folder_path": "...", "search_keyword": "..." }.
 """
 
+import backend.project_env  # noqa: F401  # repo .env before Groq
+
 import json
 import os
 import re
+from pathlib import Path
 
+from dotenv import load_dotenv
 from groq import Groq
 
 from backend.memory import load_history
@@ -339,11 +343,13 @@ def parse_intent(intent: str) -> dict:
         "spoken_response": str,
       }
     """
+    if not os.getenv("GROQ_API_KEY"):
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise EnvironmentError(
             "GROQ_API_KEY is not set. "
-            "Create a .env file in the project root with your key."
+            "Add GROQ_API_KEY=... to the .env file in the IntentOS project root (same folder as /backend)."
         )
 
     client = Groq(api_key=api_key)

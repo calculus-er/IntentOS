@@ -166,3 +166,89 @@ form.addEventListener("submit", async (e) => {
 
 // ---- Auto-focus ----
 input.focus();
+
+// ---- Wake-word UI (/api/wake-status) — isolated styles, no changes to styles.css ----
+(function setupWakeVoiceIndicator() {
+  const WAKE_STATUS_URL = "/api/wake-status";
+  const POLL_MS = 500;
+
+  const styleEl = document.createElement("style");
+  styleEl.setAttribute("data-intentos-wake-ui", "1");
+  styleEl.textContent = `
+    @keyframes intentos-wake-ring-pulse {
+      0%, 100% {
+        transform: scale(1);
+        opacity: 0.95;
+        box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.55), 0 0 18px rgba(110, 231, 183, 0.22);
+      }
+      50% {
+        transform: scale(1.015);
+        opacity: 0.65;
+        box-shadow: 0 0 0 10px rgba(167, 139, 250, 0.08), 0 0 28px rgba(110, 231, 183, 0.18);
+      }
+    }
+    .search-bar.wake-ring-active::after {
+      content: "";
+      position: absolute;
+      inset: -6px;
+      border-radius: calc(var(--radius) + 8px);
+      pointer-events: none;
+      z-index: 4;
+      border: 2px solid rgba(167, 139, 250, 0.4);
+      animation: intentos-wake-ring-pulse 1.2s ease-in-out infinite;
+    }
+    #wake-voice-label {
+      width: 100%;
+      max-width: 560px;
+      margin: 0.35rem 0 0;
+      padding: 0;
+      text-align: center;
+      font-size: 0.9rem;
+      font-family: var(--font, "Inter", system-ui, sans-serif);
+      color: rgba(161, 161, 170, 0.95);
+      min-height: 1.35em;
+      display: none;
+    }
+  `;
+  document.head.appendChild(styleEl);
+
+  const wakeLabel = document.createElement("p");
+  wakeLabel.id = "wake-voice-label";
+  wakeLabel.setAttribute("aria-live", "polite");
+  form.insertAdjacentElement("afterend", wakeLabel);
+
+  function applyWakeUi(status) {
+    if (status === "listening") {
+      form.classList.add("wake-ring-active");
+      wakeLabel.textContent = "Listening...";
+      wakeLabel.style.display = "block";
+      return;
+    }
+    if (status === "processing") {
+      form.classList.add("wake-ring-active");
+      wakeLabel.textContent = "Processing...";
+      wakeLabel.style.display = "block";
+      return;
+    }
+    form.classList.remove("wake-ring-active");
+    wakeLabel.textContent = "";
+    wakeLabel.style.display = "none";
+  }
+
+  async function pollWakeStatus() {
+    try {
+      const res = await fetch(WAKE_STATUS_URL);
+      if (!res.ok) return;
+      const data = await res.json();
+      const status = data && data.status;
+      if (status === "listening" || status === "processing" || status === "idle") {
+        applyWakeUi(status);
+      }
+    } catch (_) {
+      /* ignore — backend optional during dev */
+    }
+  }
+
+  setInterval(pollWakeStatus, POLL_MS);
+  pollWakeStatus();
+})();

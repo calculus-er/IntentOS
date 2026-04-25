@@ -9,13 +9,14 @@ Edith persona + memory (Phase 7B).
 Multi-action orchestration (Phase 8).
 """
 
+import backend.project_env  # noqa: F401  # load repo-root .env before any GROQ usage
+
 import ctypes
 import json
 import platform
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -27,10 +28,8 @@ from backend.executor import execute_tasks
 from backend.memory import save_interaction
 from backend.tts_engine import speak_async
 
-# ---------------------------------------------------------------------------
-# Load environment variables from .env
-# ---------------------------------------------------------------------------
-load_dotenv()
+# Updated by backend.voice_listener during the voice pipeline (listening / processing).
+wake_status: str = "idle"
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +137,12 @@ async def root_redirect():
 async def health_check():
     """Simple liveness probe."""
     return {"status": "ok", "service": "IntentOS", "persona": "Edith", "phase": "multi-action"}
+
+
+@app.get("/api/wake-status")
+async def wake_status_check():
+    """Voice UI: idle | listening | processing (driven by voice_listener)."""
+    return {"status": wake_status}
 
 
 @app.post("/api/intent", response_model=IntentResponse)
